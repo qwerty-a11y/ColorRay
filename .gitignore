@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+
+venv/
+.env
+
+# Data and Logs
+data/input/*
+data/output/*
+data/qr_code/*
+data/*
+
+!data/**/.gitkeep
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store

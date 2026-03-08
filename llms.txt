@@ -1,0 +1,18 @@
+# Project: ColorRay (VLC System)
+A Python-based system that transmits data via color-encoded QR video streams.
+
+## Technical Architecture
+- Language: Python 3.10-12 (Environment managed via venv)
+- Key Libraries: OpenCV (cv2) for image processing, Numpy for RAID logic.
+- Redundancy: Inter-frame RAID 5/6 + Intra-frame CRC16.
+- Color Palette: 8 pure colors (R, G, B, C, M, Y, K, W) at RGB levels 0 or 255.
+
+## Project Structure
+- /src/common: Core algorithms (CRC, RAID) and shared Config.
+- /src/sender: File -> RAID blocks -> Color QR -> MP4 Video.
+- /src/receiver: MP4/Camera -> Frame Detection -> Perspective Correction -> Color Decoding -> File Reconstruction.
+
+## Key constraints for LLM
+- Always reference `src/common/config.py` for global constants like QR_VERSION or COLOR_MAP.
+- Ensure any changes to the sender's encoding are mirrored in the receiver's decoding logic.
+- Do not use Docker-specific commands.
