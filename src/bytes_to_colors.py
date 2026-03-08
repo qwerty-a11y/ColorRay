@@ -3,7 +3,7 @@ import numpy as np
 
 def bytes_to_colors(byte_data: bytes | bytearray) -> list[tuple[int, int, int]]:
     """
-    将偶数个字节的二进制数据转换为RGB颜色数组
+    将3的倍数个字节的二进制数据转换为RGB颜色数组
     规则：
     1. 字节按二进制位拆分，低位（第0位）对应数组靠前位置；
     2. 每3位二进制位转换为一个RGB颜色值；
