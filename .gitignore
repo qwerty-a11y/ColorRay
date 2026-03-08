@@ -1,5 +1,13 @@
 __pycache__/
 *.py[cod]
+# receiver
+*.dll
+*.exe
+*.obj
+*.lib
+*.exp
+output/
+#
 
 venv/
 .env
