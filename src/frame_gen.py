@@ -162,6 +162,5 @@ def generate_frame() -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]
                 # color_grid[r][c] = random.choice(COLORS)
                 # 标记该位置需要边框
                 need_border_grid[r][c] = True
-
-    print(f"矩阵生成完成！未定义区域数量：{empty_space_count}（已随机填充颜色并标记边框）")
+   
     return color_grid, need_border_grid
