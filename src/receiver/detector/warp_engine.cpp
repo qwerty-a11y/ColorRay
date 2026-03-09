@@ -9,7 +9,8 @@ using namespace cv;
 using namespace std;
 
 // 识别模块,寻找标记中心
-vector<Point2f> FindMarkerCenters(const Mat& input_img, int channels) {
+// 【修改】：返回 Point3f，x和y是坐标，z用来存储这个定位块的面积(m00)作为置信度
+vector<Point3f> FindMarkerCenters(const Mat& input_img, int channels) {
     Mat gray;
     //这一步判断输入图像是不是三通道彩色色图
     if (channels == 3) {
@@ -51,37 +52,8 @@ vector<Point2f> FindMarkerCenters(const Mat& input_img, int channels) {
     我们把它给缝起来，抗摩尔纹干扰，这样子定位框就是闭合的了，顺手杀噪点
     */
 
-
-
-
-
-
-
     //这一步是机密，别的组都想不到的，不要外传上下模块都不要外传，我们的锐度目前是最高的  
     morphologyEx(binary, closed_binary, MORPH_CLOSE, kernel);
-
- 
-
-
-
-
-
-    // //反相图调试窗口，，可注释看彩色图
-    // static bool window_init = false;
-    // if (!window_init) {
-    //     namedWindow("Debug: Binarized", WINDOW_NORMAL);
-    //     window_init = true;
-    // }
-    // imshow("Debug: Binarized", closed_binary);
-
-
-
-
-
-
-
-
-
 
     // 存储轮廓点的集合 (contours) 和轮廓层级结构 (hierarchy)，识别是ai想的
     vector<vector<Point>> contours;
@@ -89,7 +61,7 @@ vector<Point2f> FindMarkerCenters(const Mat& input_img, int channels) {
     findContours(closed_binary, contours, hierarchy, RETR_TREE, CHAIN_APPROX_SIMPLE);
     // 在二值图上寻找所有的白岛，所以你原来的彩图边框必须是白色的！！！！！别问我为啥不能是黑色
     // RETR_TREE：记录轮廓之间的“父子嵌套关系”。
-    vector<Point2f> centers;//存符合条件的中心点
+    vector<Point3f> centers;//存符合条件的中心点和它的面积
     for (size_t i=0;i<contours.size();i++) {
         //计录i的第一个子轮廊，所以我才说叫你们把定位块画大一点，不要一个个都说“变彩色不就好了嘛~~~~~”
         int kid_idx=hierarchy[i][2];
@@ -102,21 +74,26 @@ vector<Point2f> FindMarkerCenters(const Mat& input_img, int channels) {
         if (cnt >= 2) {//两层了，杀掉无嵌套噪点
             Moments mu = moments(contours[i], false);
             if (mu.m00 > 500) //计算标记快x，y坐标，这个数值只能往大的改，这个判断不能删
-                centers.push_back(Point2f(mu.m10 / mu.m00, mu.m01 / mu.m00));
-            // 逻辑：计算重心的 X 和 Y 坐标并保存。
-            // 重心公式：X = 空间矩 m10 / 零阶矩 m00，Y = 空间矩 m01 / 零阶矩 m00。
+                // 【修改】：把面积 mu.m00 塞进 z 坐标里带出去
+                centers.push_back(Point3f(mu.m10 / mu.m00, mu.m01 / mu.m00, mu.m00));
         }
     }
-    vector<Point2f> merged;//存最后的定位点
-    //合并去重。防止距离过进产生多个定位点干扰，因为有的图内部抗干扰了还是会有虚化线，这一步弥补（虽然那张图emm不是我们的识别目标，但是能动就别删了）
+    vector<Point3f> merged;//存最后的定位点
+    //合并去重。防止距离过进产生多个定位点干扰
     for (const auto& pt : centers) {
         bool is_new = true;
-        for (auto& m : merged) 
-            if (norm(pt - m) < 100.0) { is_new = false; break; }
-        //上一行，就是判断距离，距离太近直接杀掉
-        if (is_new) merged.push_back(pt);//没问题的就加回去
+        for (auto& m : merged) {
+            // 注意：距离只算 x 和 y
+            if (norm(Point2f(pt.x, pt.y) - Point2f(m.x, m.y)) < 100.0) { 
+                is_new = false; 
+                // 距离太近融合时，保留面积更大的那个作为真身
+                if (pt.z > m.z) m = pt;
+                break; 
+            }
+        }
+        if (is_new) merged.push_back(pt);
     }
-    return merged;//返回没问题的定位块
+    return merged;
 }
 
 extern "C" {
@@ -134,84 +111,91 @@ __declspec(dllexport) bool ExtractQRCode(
     //ai协助的INTER_AREA：区域插值法，这是缩小图像时最能抗锯齿，抗摩尔纹的插值方式。
     resize(img, small_img, Size(), scale, scale, INTER_AREA);
     //然后我们用识别模块，开始找
-    vector<Point2f> small_centers = FindMarkerCenters(small_img, channels);
+    vector<Point3f> small_centers = FindMarkerCenters(small_img, channels);
     //这个就是定位块中心了
     //接下来是图像拉伸，拉回正常的位置
-    vector<Point2f> centers;
+    vector<Point3f> centers;
     for (auto pt : small_centers) //c++17的绑定
-        centers.push_back(Point2f(pt.x / scale, pt.y / scale));
-
-
+        centers.push_back(Point3f(pt.x / scale, pt.y / scale, pt.z));
 
 //| | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
 //V V V V V V V V V V V V V V V V V V V V V V V V V V V V V V     
     //调试模块，画定位点的，想看定位点取消注释
     Scalar drawColor(0, 255, 0);
     for (size_t i = 0; i < centers.size(); i++) {
-        circle(img, centers[i], 12, drawColor, 2);
-        string label = (centers.size() >= 4 && i == centers.size()-1) ? "BR_Mini" : to_string(i);
-        putText(img, label, Point(centers[i].x + 10, centers[i].y + 10), 
+        Point2f draw_pt(centers[i].x, centers[i].y);
+        circle(img, draw_pt, 12, drawColor, 2);
+        string label = to_string(i);
+        putText(img, label, Point(draw_pt.x + 10, draw_pt.y + 10), 
                 FONT_HERSHEY_SIMPLEX, 1.0, drawColor, 2);
     }
-    // if (centers.size() < 3) return false;
-    //拉伸不了摆烂，其实这里的数值应该是4，但是实际上第四个点找不到，因为太小了找不到，而且第四个点应该和另外
-    //三个点完全不一样，但问题是，增大图像可以帮助找到，但是没法特异化识别，就特异化识别暂时我也没有办法，除非这一块用多层嵌套定位，我只想到这个
-    
-    
+
     Point2f tl, tr, br, bl;//四角变量
     if (centers.size() >= 4) {
-        //求重心
-        Point2f center(0, 0);
-        for(auto p : centers) center += p;
-        center.x /= 4.0f; center.y /= 4.0f;
-        //将四个点按顺时针排序，确保它们围成一个凸四边形
-        vector<Point2f> sorted_pts = centers;
-        sort(sorted_pts.begin(), sorted_pts.end(), [&center](Point2f a, Point2f b) {
-            return atan2(a.y - center.y, a.x - center.x) < atan2(b.y - center.y, b.x - center.x);
+        //2.0新增模块，我做了一个天才般的设计，近似中心杀掉多干扰块
+        //程序可能错误的识别到多个定位块
+        //但是无论如何这些错定位块都是在二维码内部的，所以实际上对所有定位块求中心的得到的中心一定在内部
+        //然后排序求出子坐标四个点最大的分支，得到准确的四个点
+        //再重新计算正确的中心，ai都想不到，我想到了
+        Point2f approx_center(0, 0);
+        for(auto p : centers) approx_center += Point2f(p.x, p.y);
+        approx_center.x /= centers.size(); approx_center.y /= centers.size();
+        if (centers.size() > 4) {
+            //距离近似中心的远近降序排列
+            sort(centers.begin(), centers.end(), [&approx_center](Point3f a, Point3f b) {
+                return norm(Point2f(a.x, a.y) - approx_center) > norm(Point2f(b.x, b.y) - approx_center);
+            });
+            //隔离中间噪点！
+            centers.resize(4); 
+        }
+        //重新计算绝对中心！
+        Point2f exact_center(0, 0);
+        for(auto p : centers) exact_center += Point2f(p.x, p.y);
+        exact_center.x /= 4.0f; exact_center.y /= 4.0f;
+        //2.0新增全新抗透视反转模块：相似定理原理
+        //如果透视导致近处的块变大，那么它到中心的距离也会按等比例拉长
+        //用面积/距离的平方，就能抵消透视畸变
+        //右下角比值永远是全场最小的
+        int br_idx = -1;
+        float min_ratio = 1e9;
+        for (int i = 0; i < 4; i++) {
+            float dist = norm(Point2f(centers[i].x, centers[i].y) - exact_center);
+            float area = centers[i].z;//m00面积
+            float ratio = area / (dist * dist); 
+            if (ratio < min_ratio) {
+                min_ratio = ratio;
+                br_idx = i;//比值最小的点是BR
+            }
+        }
+        Point2f br_point = Point2f(centers[br_idx].x, centers[br_idx].y);
+        //围成一个凸四边形
+        vector<Point2f> sorted_pts;
+        for(auto p : centers) sorted_pts.push_back(Point2f(p.x, p.y));
+        sort(sorted_pts.begin(), sorted_pts.end(), [&exact_center](Point2f a, Point2f b) {
+            return atan2(a.y - exact_center.y, a.x - exact_center.x) < atan2(b.y - exact_center.y, b.x - exact_center.x);
         });
-        // 计算对角线长度。因为只有右下角(BR)是往里凹的，
-        // 包含 BR和TL的那条对角线，一定比包含TR和BL的短！
-        float d1 = norm(sorted_pts[0] - sorted_pts[2]);
-        float d2 = norm(sorted_pts[1] - sorted_pts[3]);
-        Point2f diag_short_p1, diag_short_p2;//短对角线的两个点是TL和BR
-        Point2f diag_long_p1, diag_long_p2; //长对角线的两个点是TR和BL
-        if (d1 < d2){
-            diag_short_p1=sorted_pts[0]; diag_short_p2 = sorted_pts[2];
-            diag_long_p1=sorted_pts[1]; diag_long_p2 = sorted_pts[3];
-        } else{
-            diag_short_p1=sorted_pts[1]; diag_short_p2 = sorted_pts[3];
-            diag_long_p1=sorted_pts[0]; diag_long_p2 = sorted_pts[2];
+        int sorted_br_idx = 0;
+        for(int i = 0; i < 4; i++) {
+            if(norm(sorted_pts[i] - br_point) < 1.0f) { 
+                sorted_br_idx = i;
+                break;
+            }
         }
-        //在短对角线中找出BR右下角
-        //因为BR内偏，所以它离长对角线的中点距离比TL更近
-        Point2f mid_long = (diag_long_p1 + diag_long_p2) * 0.5f;
-        if (norm(diag_short_p1 - mid_long) < norm(diag_short_p2 - mid_long)) {
-            br = diag_short_p1;//距离中点近的是右下角BR
-            tl = diag_short_p2;//距离中点远的是左上角TL
-        } else {
-            br = diag_short_p2;
-            tl = diag_short_p1;
-        }
-        // TR右上BL左下向量叉乘判方向
-        // 向量TL指向TR叉乘向量TL指向BL结果为正。
-        Point2f p1 = diag_long_p1, p2 = diag_long_p2;
-        float cross = (p1.x - tl.x) * (p2.y - tl.y) - (p1.y - tl.y) * (p2.x - tl.x);
-        if (cross > 0)  tr = p1, bl = p2;
-        else  tr = p2, bl = p1;
-        // 接下来透视变换会自动将图像旋转、翻转回正确的朝向。
-        // 就是防止吞外围的吞了就改大一点
-        float pad_x = out_width *  0.05225; 
+        //2.0致命错误修复，补上了前面删错的代码
+        br = sorted_pts[sorted_br_idx];
+        bl = sorted_pts[(sorted_br_idx + 1) % 4]; 
+        tl = sorted_pts[(sorted_br_idx + 2) % 4];
+        tr = sorted_pts[(sorted_br_idx + 3) % 4]; 
+        float pad_x = out_width * 0.05225; 
         float pad_y = out_height * 0.05225;
-//| | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-//V V V V V V V V V V V V V V V V V V V V V V V V V V V V V V 
-        // 因为 BR 点物理上偏内，我们在目标图中将其坐标也向内收缩。
-        // 如果拉得不够，增大correct；如果拉过头了，减小correct。
+        //| | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
+        //V V V V V V V V V V V V V V V V V V V V V V V V V V V V V V 
+        //因为物理中心不是标准的正方形，会有微小的内推需求，所以人工调参，补偿变形
         float correct = out_width * 0.0160f; //谁动这个参数我砍谁，我调了一下午，第四个定位块中心不准变
         vector<Point2f> src = { tl, tr, br, bl };
         vector<Point2f> dst = { 
             Point2f(pad_x, pad_y), 
             Point2f(out_width - 1 - pad_x, pad_y), 
-            // 目标点向内缩，从而让变换矩阵把 BR 附近的内容“向外拉”
             Point2f(out_width - 1 - pad_x - correct, out_height - 1 - pad_y - correct), 
             Point2f(pad_x, out_height - 1 - pad_y) 
         };
