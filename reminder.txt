@@ -3,5 +3,5 @@
 //主体文件目录修改要经同意，receiver文件除外
 data文件自用，不要上传到仓库
 每次做出重大编辑时要同时修改llms.txt
-环境控制：
-python版本：
+环境控制见requirements.txt
+data文件通过群内文件联系，data的reminder.txt文件也在群中

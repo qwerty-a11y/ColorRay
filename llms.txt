@@ -16,3 +16,10 @@ A Python-based system that transmits data via color-encoded QR video streams.
 - Always reference `src/common/config.py` for global constants like QR_VERSION or COLOR_MAP.
 - Ensure any changes to the sender's encoding are mirrored in the receiver's decoding logic.
 - Do not use Docker-specific commands.
+
+## 2026年3月 新增模块
+- `src/sender/generator/frame_gen.py`：生成固定结构的颜色矩阵和边框标记。
+- `src/sender/generator/drawer.py`：将颜色矩阵渲染为图片。
+- `src/sender/generator/colors_to_matrix.py`：颜色流填充矩阵，支持异常处理。
+- `src/sender/generator/bytes_to_colors.py`：字节流与颜色流互转，自动补齐。
+- `src/receiver/detector/warp_engine.cpp`：OpenCV实现的定位块检测，返回中心及面积置信度。
