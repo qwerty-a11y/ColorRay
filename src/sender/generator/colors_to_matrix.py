@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import copy
 
 # 使用颜色流数据填充矩阵（矩阵需要先通过frame_gen.py生成基础结构），不包含解码器
 
@@ -14,7 +15,7 @@ class NoEmptyPositionError(ValueError):
     """无空余位置可填，但颜色列表未填充完成的异常"""
     pass
 
-def fill_matrix(
+def colors_to_matrix(
     matrix: list[list[tuple[int, int, int] | None]],
     color_list: list[tuple[int, int, int]],
     patch_size: int = 16844, #现版本方案为固定值16844
@@ -37,6 +38,8 @@ def fill_matrix(
     N = 137  # 矩阵固定边长
     patch_size = 16844 #现版本方案为固定值16844
     total_pos = N * N  # 矩阵总位置数
+
+    matrix = copy.deepcopy(matrix)  # 避免修改原矩阵
 
     # ===================== 1. 输入合法性校验 =====================
     # 校验矩阵尺寸
