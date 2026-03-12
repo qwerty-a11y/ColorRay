@@ -37,7 +37,7 @@ def generate_frame() -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]
 
     # ===================== 初始化矩阵 =====================
     # 颜色矩阵：初始为None（未定义区域）
-    color_grid = [[None for _ in range(GRID_COUNT)] for _ in range(GRID_COUNT)]
+    color_grid:list[list[tuple[int,int,int]|None]] = [[None for _ in range(GRID_COUNT)] for _ in range(GRID_COUNT)]
     # 边框标记矩阵：初始为False（无需边框）
     need_border_grid = [[False for _ in range(GRID_COUNT)] for _ in range(GRID_COUNT)]
 
