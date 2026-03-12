@@ -56,7 +56,7 @@ def process_frame(img_bgr, out_size=800):
 
 if __name__ == "__main__":
     # 替换为你实际的测试图片路径
-    img_path = 'test1.png'
+    img_path = 'test4.png'
     img = cv2.imread(img_path)
     
     if img is None:
