@@ -1,14 +1,15 @@
 import numpy as np
 from PIL import Image, ImageDraw
 import datetime
+import common.Config as Config
 
 #输入颜色矩阵和需要边框矩阵，生成图像并保存
 
 def drawer(grid, need_border):
 
     CELL_PIXELS = 12  # 每个网格单元的像素大小 (12x12 像素)
-    IMG_SIZE = 1644   # 图像总尺寸 1644x1644
-    GRID_COUNT = IMG_SIZE // CELL_PIXELS  # 网格数量 = 1644/12 = 137
+    GRID_COUNT = Config.QRSize + 4  # 网格数量 = 1644/12 = 137
+    IMG_SIZE = GRID_COUNT*CELL_PIXELS   # 图像总尺寸 1644x1644
     BG_GRAY = (128, 128, 128)
 
     # ========== 创建图像并绘制 ==========

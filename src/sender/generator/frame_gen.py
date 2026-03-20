@@ -1,4 +1,5 @@
 import numpy as np
+import common.Config as Config
 
 # 生成基础结构，后续建议根据基础结构做解码器
 # 修改自@kafuchino的代码，将其提取成函数
@@ -19,8 +20,9 @@ def generate_frame() -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]
     """
     # ===================== 固定参数（与原逻辑一致） =====================
     CELL_PIXELS = 12  # 每个网格单元的像素大小 (12x12 像素)
-    IMG_SIZE = 1644   # 图像总尺寸 1644x1644
-    GRID_COUNT = IMG_SIZE // CELL_PIXELS  # 网格数量 = 1644/12 = 137
+    GRID_COUNT = Config.QRSize + 4  # 网格数量 = 1644/12 = 137
+    IMG_SIZE = GRID_COUNT*CELL_PIXELS   # 图像总尺寸 1644x1644
+    
 
     # 8 种标准颜色 (RGB)
     COLORS = [

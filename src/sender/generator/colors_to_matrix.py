@@ -1,11 +1,9 @@
 import math
 import numpy as np
 import copy
+import common.Config as Config
 
 # 使用颜色流数据填充矩阵（矩阵需要先通过frame_gen.py生成基础结构），不包含解码器
-
-EMPTY_SPACR_NUM = 16844 #hyperparameter
-PATCH_SIZE = 16844 * 8 // 3 #每张图片可存储的加密字节数 
 
 class MatrixHasNoneError(ValueError):
     """填充完成后矩阵仍有None的异常"""
@@ -18,7 +16,7 @@ class NoEmptyPositionError(ValueError):
 def colors_to_matrix(
     matrix: list[list[tuple[int, int, int] | None]],
     color_list: list[tuple[int, int, int]],
-    patch_size: int = 16844, #现版本方案为固定值16844
+    patch_size: int = Config.DataBlocks, #现版本方案为固定值16844
     start_pos: int = 0,  # 填充起始一维索引（默认从0开始）
     step: int = 68        # 互质步长，建议选择68
 ) -> list[list[tuple[int, int, int] | None]]:
@@ -35,8 +33,8 @@ def colors_to_matrix(
     :raises MatrixHasNoneError: 填充后矩阵仍有None
     :raises NoEmptyPositionError: 无空余位置但颜色列表未填完
     """
-    N = 137  # 矩阵固定边长
-    patch_size = 16844 #现版本方案为固定值16844
+    N = Config.QRSize + 4  # 矩阵固定边长
+    patch_size = Config.DataBlocks #现版本方案为固定值16844
     total_pos = N * N  # 矩阵总位置数
 
     matrix = copy.deepcopy(matrix)  # 避免修改原矩阵
