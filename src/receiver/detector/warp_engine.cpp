@@ -3,8 +3,8 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
-//#include <immintrin.h>//我本来想使用simd加速没有数据依赖的循环，好像用不上？
-//还挺像做线程分配的说是，好像也不行
+#include <chrono>
+
 using namespace cv;
 using namespace std;
 /*==============================================================================
@@ -17,6 +17,7 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {                   
         Mat hsv, BinaryMask;                                                                //声明"HSV色彩空间"矩阵与"黑白掩膜"矩阵
         cvtColor(input, hsv, COLOR_BGR2HSV);                                                //把BGR转成HSV色彩空间
         cvtColor(input, gray, COLOR_BGR2GRAY);                                              //把BGR转成单通道灰度图
+        
         vector<Mat> hsv_ch;
         split(hsv, hsv_ch);                                                                 //拆分成"色相[0]","饱和度[1]","亮度[2]"
         threshold(hsv_ch[1], BinaryMask, 180, 255, THRESH_BINARY);                          //二值化操作，把hsv_ch[1]里饱和度超过180的区域转成255(纯白),THRESH_BINARY是二值化参数,现在我们把所有白色膜区域，全部在灰度图里全部变成白色，，其他的一律定成黑色，这样子整张图就只剩四角定位块和中间零散黑点        
@@ -32,10 +33,10 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {                   
     *///========================================================================
 
     Mat binary;                                                                             //声明局部二值化矩阵
-    adaptiveThreshold(gray,binary,255,ADAPTIVE_THRESH_GAUSSIAN_C,THRESH_BINARY_INV,101,15); //高斯加权处理近似，不要改第二个参数
-    Mat kernel = getStructuringElement(MORPH_RECT, Size(2, 2));                            //定义一个L形手术刀，在后面做单像素摩尔纹处理
+    adaptiveThreshold(gray,binary,255,ADAPTIVE_THRESH_MEAN_C,THRESH_BINARY_INV,47,15);      //积分处理近似，不要改第二个参数
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(2, 2));                             //定义一个L形手术刀，在后面做单像素摩尔纹处理
     Mat closed_binary;                                                                      //声明闭运算处理后的黑白图像
-    morphologyEx(binary, closed_binary, MORPH_OPEN, kernel);                               //开始做闭运算处理
+    morphologyEx(binary, closed_binary, MORPH_OPEN, kernel);                                //开始做闭运算处理
 
     /*//========================================================================
     上面的模块就别删了，理论上是矩形开运算，因为我搞反了，因为我需要吃掉白色摩尔纹
@@ -68,13 +69,12 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {                   
 
     vector<Point3f> centers;                                                                //存符合条件的中心点和它的面积
     for (size_t i=0;i<contours.size();i++) {
-        //计录i的第一个子轮廊，所以我才说叫你们把定位块画大一点，不要一个个都说“变彩色不就好了嘛~~~~~”
-        int kid_idx=hierarchy[i][2];
-        int cnt = 0;//层数
-        while(kid_idx!=-1) {//类似跳表，一路进去数几层，其实2层就能跳出来了
+        int kid_idx=hierarchy[i][2];                                                        //记录i个定位块的第一个子轮廊
+        int cnt = 0;                                                                        //层数
+        while(kid_idx!=-1) {                                                                //类似跳表，一路进去数几层，其实2层就能跳出来了
             cnt++;
             kid_idx=hierarchy[kid_idx][2];
-            if(cnt>=2)break;//保证性能
+            if(cnt>=2)break;                                                                //优化性能
         }
         if (cnt >= 2) {                                                                     //两层了，杀掉无嵌套噪点
             Moments mu = moments(contours[i], false);                                       //提取特征矩
@@ -82,26 +82,28 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {                   
                 centers.push_back(Point3f(mu.m10 / mu.m00, mu.m01 / mu.m00, mu.m00));       //计算质心，同时存下面积
         }
     }
-    vector<Point3f> merged;//存最后的定位点
-    //合并去重。防止距离过进产生多个定位点干扰
-    for (const auto& pt : centers) {
+    //不要再问我为什么定位块不做成彩色，然后定位块缩小这种唐人方案，自己看第76行
+    vector<Point3f> merged;                                                                 //存最后的定位块
+    for (const auto& pt : centers) {                                                        //合并去重。防止距离过进产生多个定位点干扰
         bool is_new = true;
         for (auto& m : merged) {
             if (norm(Point2f(pt.x, pt.y) - Point2f(m.x, m.y)) < 150.0) {                    //杀掉距离过近的定位快
                 is_new = false; 
-                // 距离太近融合时，保留面积更大的那个作为真身
-                if (pt.z > m.z) m = pt;
+                if (pt.z > m.z) m = pt;                                                     //通过面积判断主要中心定位块
                 break; 
             }
         }
         if (is_new) merged.push_back(pt);
     }
-    return merged;
+    return merged;                                                                          //返回我们找到的所有定位块
 }
 
+/*==============================================================================
+                                    [接口函数]
+*///============================================================================
 extern "C" {
-//接口
-__declspec(dllexport) bool ExtractQRCode(
+auto start_time = std::chrono::high_resolution_clock::now();                                //性能计时器，觉得烦可以删掉
+__declspec(dllexport) bool ExtractQRCode( 
     unsigned char* in_data, int width, int height, int channels,
     unsigned char* out_data, int out_width, int out_height) 
 {
@@ -112,55 +114,50 @@ __declspec(dllexport) bool ExtractQRCode(
     resize(img, small_img, Size(), scale, scale, INTER_AREA);                               //ai协助的INTER_AREA：区域插值法，这是缩小图像时最能抗锯齿，抗摩尔纹的插值方式。
     vector<Point3f> small_centers = FindMarkerCenters(small_img, channels);                 //然后我们用识别模块，开始找
     vector<Point3f> centers;
-    for (auto pt : small_centers) //c++17的绑定
+    for (auto pt : small_centers)
         centers.push_back(Point3f(pt.x / scale, pt.y / scale, pt.z));
 
     // =========================================================================
     // [调试窗口2]定位块标记，取消注释即可观看标记
-    // Scalar drawColor(0, 255, 0);
-    // for (size_t i = 0; i < centers.size(); i++) {
-    //     Point2f draw_pt(centers[i].x, centers[i].y);
-    //     circle(img, draw_pt, 12, drawColor, 2);
-    //     string label = to_string(i);
-    //     putText(img, label, Point(draw_pt.x + 10, draw_pt.y + 10), 
-    //             FONT_HERSHEY_SIMPLEX, 1.0, drawColor, 2);
-    // }
+    Scalar drawColor(0, 255, 0);
+    for (size_t i = 0; i < centers.size(); i++) {
+        Point2f draw_pt(centers[i].x, centers[i].y);
+        circle(img, draw_pt, 12, drawColor, 2);
+        string label = to_string(i);
+        putText(img, label, Point(draw_pt.x + 10, draw_pt.y + 10), 
+                FONT_HERSHEY_SIMPLEX, 1.0, drawColor, 2);
+    }
     // =========================================================================
     
     Point2f tl, tr, br, bl;                                                                 //四角变量
     if (centers.size() >= 4) {                                            
         Point2f approx_center(0, 0);                                                        //近似中心误差排除法
         for(auto p : centers) approx_center += Point2f(p.x, p.y);
-        approx_center.x /= centers.size(); approx_center.y /= centers.size();
+        approx_center.x /= centers.size(); approx_center.y /= centers.size();               //计算近似中心
         if (centers.size() > 4) {
-            //距离近似中心的远近降序排列
-            sort(centers.begin(), centers.end(), [&approx_center](Point3f a, Point3f b) {
+            sort(centers.begin(), centers.end(), [&approx_center](Point3f a, Point3f b) {   //将点按照距离近似中心的远近降序排列
                 return norm(Point2f(a.x, a.y) - approx_center) > norm(Point2f(b.x, b.y) - approx_center);
             });
-            //隔离中间噪点！
             centers.resize(4); 
         }
-        //重新计算绝对中心！
         Point2f exact_center(0, 0);
         for(auto p : centers) exact_center += Point2f(p.x, p.y);
-        exact_center.x /= 4.0f; exact_center.y /= 4.0f;
-        //2.0新增全新抗透视反转模块：相似定理原理
-        //如果透视导致近处的块变大，那么它到中心的距离也会按等比例拉长
-        //用面积/距离的平方，就能抵消透视畸变
-        //右下角比值永远是全场最小的
+        exact_center.x /= 4.0f; exact_center.y /= 4.0f;                                     //计算精确中心
+
+        // =====================================================================
+        //                         [抗透视反转模块]
         int br_idx = -1;
         float min_ratio = 1e9;
         for (int i = 0; i < 4; i++) {
             float dist = norm(Point2f(centers[i].x, centers[i].y) - exact_center);
-            float area = centers[i].z;//m00面积
+            float area = centers[i].z; 
             float ratio = area / (dist * dist); 
             if (ratio < min_ratio) {
                 min_ratio = ratio;
-                br_idx = i;//比值最小的点是BR
+                br_idx = i; 
             }
         }
         Point2f br_point = Point2f(centers[br_idx].x, centers[br_idx].y);
-        //围成一个凸四边形
         vector<Point2f> sorted_pts;
         for(auto p : centers) sorted_pts.push_back(Point2f(p.x, p.y));
         sort(sorted_pts.begin(), sorted_pts.end(), [&exact_center](Point2f a, Point2f b) {
@@ -173,11 +170,16 @@ __declspec(dllexport) bool ExtractQRCode(
                 break;
             }
         }
-        //2.0致命错误修复，补上了前面删错的代码
+
+    //==========================================================================
+    //                            [旋转模块]
         br = sorted_pts[sorted_br_idx];
-        bl = sorted_pts[(sorted_br_idx + 1) % 4]; 
-        tl = sorted_pts[(sorted_br_idx + 2) % 4];
-        tr = sorted_pts[(sorted_br_idx + 3) % 4]; 
+        bl = sorted_pts[(sorted_br_idx + 1) % 4];                                           // BR 的下一个是 BL
+        tl = sorted_pts[(sorted_br_idx + 2) % 4];                                           // BR 的对角是 TL
+        tr = sorted_pts[(sorted_br_idx + 3) % 4];       
+                                            // BR 的上一个是 TR
+    //==========================================================================
+    //                          [白边消除模块]
         float pad_x = out_width * 0.05225; 
         float pad_y = out_height * 0.05225;
 
