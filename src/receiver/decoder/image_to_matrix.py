@@ -60,7 +60,7 @@ def image_to_matrix(image_path: str, run_mode='normal') -> list[list[tuple[int, 
         kernel = np.outer(gauss, gauss)
         return kernel / kernel.sum()
 
-    kernel = get_gaussian_kernel(win_size, sigma=1.5)
+    kernel = get_gaussian_kernel(win_size, sigma=0.5)
     
     # 分块逻辑 (Target_H, Target_W, C) -> (block, block, 11, 11, 3)
     blocks = enhanced_rgb.reshape(block_num, win_size, block_num, win_size, 3).transpose(0, 2, 1, 3, 4)
