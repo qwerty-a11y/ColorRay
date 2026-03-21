@@ -17,6 +17,7 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {                   
         Mat hsv, BinaryMask;                                                                //声明"HSV色彩空间"矩阵与"黑白掩膜"矩阵
         cvtColor(input, hsv, COLOR_BGR2HSV);                                                //把BGR转成HSV色彩空间
         cvtColor(input, gray, COLOR_BGR2GRAY);                                              //把BGR转成单通道灰度图
+        
         vector<Mat> hsv_ch;
         split(hsv, hsv_ch);                                                                 //拆分成"色相[0]","饱和度[1]","亮度[2]"
         threshold(hsv_ch[1], BinaryMask, 180, 255, THRESH_BINARY);                          //二值化操作，把hsv_ch[1]里饱和度超过180的区域转成255(纯白),THRESH_BINARY是二值化参数,现在我们把所有白色膜区域，全部在灰度图里全部变成白色，，其他的一律定成黑色，这样子整张图就只剩四角定位块和中间零散黑点        
@@ -32,10 +33,10 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {                   
     *///========================================================================
 
     Mat binary;                                                                             //声明局部二值化矩阵
-    adaptiveThreshold(gray,binary,255,ADAPTIVE_THRESH_GAUSSIAN_C,THRESH_BINARY_INV,101,15); //高斯加权处理近似，不要改第二个参数
-    Mat kernel = getStructuringElement(MORPH_RECT, Size(2, 2));                            //定义一个L形手术刀，在后面做单像素摩尔纹处理
+    adaptiveThreshold(gray,binary,255,ADAPTIVE_THRESH_MEAN_C,THRESH_BINARY_INV,47,15);      //积分处理近似，不要改第二个参数
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(2, 2));                             //定义一个L形手术刀，在后面做单像素摩尔纹处理
     Mat closed_binary;                                                                      //声明闭运算处理后的黑白图像
-    morphologyEx(binary, closed_binary, MORPH_OPEN, kernel);                               //开始做闭运算处理
+    morphologyEx(binary, closed_binary, MORPH_OPEN, kernel);                                //开始做闭运算处理
 
     /*//========================================================================
     上面的模块就别删了，理论上是矩形开运算，因为我搞反了，因为我需要吃掉白色摩尔纹
@@ -118,14 +119,14 @@ __declspec(dllexport) bool ExtractQRCode(
 
     // =========================================================================
     // [调试窗口2]定位块标记，取消注释即可观看标记
-    // Scalar drawColor(0, 255, 0);
-    // for (size_t i = 0; i < centers.size(); i++) {
-    //     Point2f draw_pt(centers[i].x, centers[i].y);
-    //     circle(img, draw_pt, 12, drawColor, 2);
-    //     string label = to_string(i);
-    //     putText(img, label, Point(draw_pt.x + 10, draw_pt.y + 10), 
-    //             FONT_HERSHEY_SIMPLEX, 1.0, drawColor, 2);
-    // }
+    Scalar drawColor(0, 255, 0);
+    for (size_t i = 0; i < centers.size(); i++) {
+        Point2f draw_pt(centers[i].x, centers[i].y);
+        circle(img, draw_pt, 12, drawColor, 2);
+        string label = to_string(i);
+        putText(img, label, Point(draw_pt.x + 10, draw_pt.y + 10), 
+                FONT_HERSHEY_SIMPLEX, 1.0, drawColor, 2);
+    }
     // =========================================================================
     
     Point2f tl, tr, br, bl;                                                                 //四角变量
