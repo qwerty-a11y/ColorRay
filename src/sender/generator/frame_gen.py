@@ -1,5 +1,13 @@
+import os, sys
+
+# 添加项目根目录到 Python 模块搜索路径
+current_file_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_file_dir, "..", "..", ".."))
+sys.path.insert(0, project_root)
+
+
 import numpy as np
-import common.Config as Config
+import src.common.Config as Config
 
 # 生成基础结构，后续建议根据基础结构做解码器
 # 修改自@kafuchino的代码，将其提取成函数
