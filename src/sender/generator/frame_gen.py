@@ -1,5 +1,13 @@
+import os, sys
+
+# 添加项目根目录到 Python 模块搜索路径
+current_file_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_file_dir, "..", "..", ".."))
+sys.path.insert(0, project_root)
+
+
 import numpy as np
-import common.Config as Config
+import src.common.Config as Config
 
 # 生成基础结构，后续建议根据基础结构做解码器
 # 修改自@kafuchino的代码，将其提取成函数
@@ -108,9 +116,9 @@ def generate_frame() -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]
     # 内层：6x6 白色
     draw_filled_rect(small_finder_start + 2, small_finder_start + 2,
                      small_finder_start + 7, small_finder_start + 7, (255, 255, 255))
-    # 核心：2x2 黑色
-    draw_filled_rect(small_finder_start + 4, small_finder_start + 4,
-                     small_finder_start + 5, small_finder_start + 5, (0, 0, 0))
+    # 核心：4x4 黑色
+    draw_filled_rect(small_finder_start + 3, small_finder_start + 3,
+                     small_finder_start + 6, small_finder_start + 6, (0, 0, 0))
 
     # ===================== 4. 绘制右下角8种标准色块（2行4列） =====================
     # 位置：紧贴白色边框内侧，倒数第4行、倒数第6列开始
