@@ -50,7 +50,7 @@ if __name__ == "__main__":
     # 【视频源设置】
     # 填入你实际的视频文件路径，比如 'test_video.mp4'
     # 如果你想直接调用电脑摄像头，把这里改成数字 0
-    video_source = 'test2.MOV'  
+    video_source = 'test.MOV'  
     # =========================================================================
     
     cap = cv2.VideoCapture(video_source)
@@ -77,7 +77,7 @@ if __name__ == "__main__":
         frame_count += 1
         
         # 将当前帧丢进 C++ 引擎处理
-        result = process_frame(frame, out_size=800)
+        result = process_frame(frame, out_size=1024)
 
         # 1. 显示带有绿色标记的原图（C++ 已直接在内存中画好标记）
         # 4K图太大，屏幕放不下，我们在 Python 端把它缩放到 800x600 的小窗口展示
