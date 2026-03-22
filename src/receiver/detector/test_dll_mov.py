@@ -1,103 +1,80 @@
-﻿import cv2
+﻿﻿import cv2
 import numpy as np
 import ctypes
 import os
 import time
-
-# 1. 加载 DLL
-# 确保 warp_engine.dll 与此脚本在同一目录下
-dll_path = os.path.join(os.path.dirname(__file__), 'warp_engine.dll')
+# =============================================================================
+# [0. DLL 依赖路径配置]
+# =============================================================================
+current_dir = os.path.abspath(os.path.dirname(__file__))
+if hasattr(os, 'add_dll_directory'):
+    os.add_dll_directory(current_dir)
+# =============================================================================
+# [1. 加载 CPU 版 DLL]
+# =============================================================================
+dll_path = os.path.join(current_dir, 'warp_engine.dll')
 if not os.path.exists(dll_path):
-    raise FileNotFoundError(f"找不到 DLL: {dll_path}")
-
-warp_engine = ctypes.CDLL(dll_path)
-
-# 2. 定义 C++ 函数的签名
-# 必须与 Canvas 中的 extern "C" 函数参数严格对应
+    raise FileNotFoundError(f"找不到 CPU 版 DLL: {dll_path}，请确保已通过 CPU 任务编译。")
+# 加载动态库，winmode=0 确保能加载当前目录下的依赖项 (如 opencv_worldxxx.dll)
+warp_engine = ctypes.CDLL(dll_path, winmode=0)
+# 绑定接口签名
 warp_engine.ExtractQRCode.argtypes = [
-    ctypes.POINTER(ctypes.c_uint8),  # in_data (原图指针)
-    ctypes.c_int,                    # width
-    ctypes.c_int,                    # height
-    ctypes.c_int,                    # channels
-    ctypes.POINTER(ctypes.c_uint8),  # out_data (输出缓冲区指针)
-    ctypes.c_int,                    # out_width
-    ctypes.c_int                     # out_height
+    ctypes.POINTER(ctypes.c_uint8),  # in_data
+    ctypes.c_int,                   # width
+    ctypes.c_int,                   # height
+    ctypes.c_int,                   # channels
+    ctypes.POINTER(ctypes.c_uint8),  # out_data
+    ctypes.c_int,                   # out_width
+    ctypes.c_int                    # out_height
 ]
 warp_engine.ExtractQRCode.restype = ctypes.c_bool
-
-def process_frame(img_bgr, out_size=800):
-    """
-    调用 C++ DLL 处理图像，提取并校正二维码区域
-    """
-    # 【核心安全】强制内存连续，防止 C++ 访问非法地址导致崩溃
-    img_bgr = np.ascontiguousarray(img_bgr)
+# =============================================================================
+# [2. 核心处理封装 (零拷贝内存池版)]
+# =============================================================================
+def process_frame(frame, pre_allocated_out, out_size=1024):
+    if frame is None:
+        return False
+    # 强制内存连续，这是 Python 传指针给 C++ 的安全红线
+    img_bgr = np.ascontiguousarray(frame)
     h, w, c = img_bgr.shape
-    
-    # 预分配输出内存 (默认 800x800)
-    out_img = np.zeros((out_size, out_size, c), dtype=np.uint8)
-
-    # 获取底层 C 指针
     in_ptr = img_bgr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-    out_ptr = out_img.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-
-    # 执行 C++ 逻辑 (C++ 会直接在 in_ptr 原图内存上画绿圈)
-    success = warp_engine.ExtractQRCode(in_ptr, w, h, c, out_ptr, out_size, out_size)
-    
-    return out_img if success else None
-
+    out_ptr = pre_allocated_out.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+    # 直接在传入的 pre_allocated_out 内存上操作
+    return warp_engine.ExtractQRCode(in_ptr, w, h, c, out_ptr, out_size, out_size)
+# =============================================================================
+# [3. 主运行程序：10次大循环性能测试]
+# =============================================================================
 if __name__ == "__main__":
-    # =========================================================================
-    # 【视频源设置】
-    # 填入你实际的视频文件路径，比如 'test_video.mp4'
-    # 如果你想直接调用电脑摄像头，把这里改成数字 0
-    video_source = 'test.MOV'  
-    # =========================================================================
-    
-    cap = cv2.VideoCapture(video_source)
-    
-    if not cap.isOpened():
-        print(f"无法打开视频或摄像头: {video_source}")
-        exit()
-
-    print("开始调用 C++ DLL 引擎处理视频流...")
-    print(">>> 提示: 在弹出的窗口中按下键盘上的 'q' 键或 'ESC' 键即可退出程序 <<<")
-    
-    frame_count = 0
-    
-    # 开始死循环读取视频帧
-    while True:
-        # 读取一帧
-        ret, frame = cap.read()
-        
-        # 如果 ret 为 False，说明视频播完了，或者摄像头断开了
-        if not ret:
-            print("\n视频流结束或无法获取画面。")
-            break
-            
-        frame_count += 1
-        
-        # 将当前帧丢进 C++ 引擎处理
-        result = process_frame(frame, out_size=1024)
-
-        # 1. 显示带有绿色标记的原图（C++ 已直接在内存中画好标记）
-        # 4K图太大，屏幕放不下，我们在 Python 端把它缩放到 800x600 的小窗口展示
-        monitor_size = (800, 600)
-        cv2.imshow("Python Monitor: Original with Markers", cv2.resize(frame, monitor_size))
-        
-        # 2. 显示拉伸后的结果
-        # 因为我们预先分配了 out_img 的全黑矩阵，如果C++没找到4个点，返回的可能是一张纯黑图
-        if result is not None:
-            cv2.imshow("Python Monitor: Warped Result", result)
-
-        # 【核心操作：1ms 刷新机制】
-        # waitKey(1) 意味着给底层 GUI 库 1 毫秒的时间去刷新画面，这样图像才会动起来。
-        # 同时监控键盘输入，如果按下 'q' 键 (ASCII: 113) 或 ESC 键 (ASCII: 27) 则退出。
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q') or key == 27:
-            print("\n用户手动终止处理。")
-            break
-
-    # 善后工作：释放视频句柄，销毁所有 OpenCV 窗口
-    cap.release()
-    cv2.destroyAllWindows()
-    print(f"处理完成，共处理了 {frame_count} 帧。")
+    video_path = 'test4.MOV'  
+    OUT_SIZE = 1024
+    REPEAT_COUNT = 10         # 循环遍数
+    # 预分配输出缓冲区 (内存池)
+    shared_out_buffer = np.zeros((OUT_SIZE, OUT_SIZE, 3), dtype=np.uint8)
+    print(f">>> CPU 组性能压力测试启动 | 数据源: {video_path} | 循环次数: {REPEAT_COUNT}")
+    try:
+        for loop_idx in range(1, REPEAT_COUNT + 1):
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f"错误: 无法打开视频 {video_path}")
+                break
+            frame_in_loop = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_in_loop += 1
+                success = process_frame(frame, shared_out_buffer, out_size=OUT_SIZE)
+                monitor_size = (800, 600)
+                cv2.imshow("Input Stream (CPU Group)", cv2.resize(frame, monitor_size))        
+                if success:
+                    cv2.imshow("Processed Output (8-Color)", shared_out_buffer)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print(">>> 用户强制退出。")
+                    cap.release()
+                    cv2.destroyAllWindows()
+                    exit()
+            cap.release()
+            print(f"[*] 第 {loop_idx}/{REPEAT_COUNT} 遍循环处理完成 ({frame_in_loop} 帧)")
+    finally:
+        cv2.destroyAllWindows()
+        print("\n>>> 全案 10 遍测试结束，程序已安全退出。")
