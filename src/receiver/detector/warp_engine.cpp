@@ -76,7 +76,7 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {
         }
         if (is_new) merged.push_back(pt);
     }
-    return merged;
+    return merged;                                                                          //返回我们找到的所有定位块
 }
 /*==============================================================================
                                 [局部追踪模块] 

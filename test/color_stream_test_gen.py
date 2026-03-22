@@ -1,5 +1,18 @@
 import numpy as np
 import random
+import src.common.Config as Config
+
+STANDARD_COLORS = [
+        (0, 0, 0),      # 黑
+        (0, 0, 255),    # 蓝
+        (0, 255, 0),    # 绿
+        (0, 255, 255),  # 青
+        (255, 0, 0),    # 红
+        (255, 0, 255),  # 品红
+        (255, 255, 0),  # 黄
+        (255, 255, 255) # 白
+    ]
+
 def generate_discrete_block_color_array() -> list[tuple[int, int, int]]:
     """
     生成符合以下规则的测试颜色列表（长度16844）：
@@ -11,22 +24,10 @@ def generate_discrete_block_color_array() -> list[tuple[int, int, int]]:
     :return: 长度为16844的颜色列表
     """
     # 核心参数
-    TOTAL_LENGTH = 16844    # 总长度
+    TOTAL_LENGTH = Config.DataBlocks    # 总长度
     BLOCK_SIZE = 16         # 每个颜色块的长度
     FULL_BLOCK_COUNT = TOTAL_LENGTH // BLOCK_SIZE  # 完整块数：16844//16=1052
     REMAIN_COUNT = TOTAL_LENGTH % BLOCK_SIZE       # 剩余位置数：4
-
-    # 定义8种标准颜色（固定）
-    STANDARD_COLORS = [
-        (0, 0, 0),      # 黑
-        (0, 0, 255),    # 蓝
-        (0, 255, 0),    # 绿
-        (0, 255, 255),  # 青
-        (255, 0, 0),    # 红
-        (255, 0, 255),  # 品红
-        (255, 255, 0),  # 黄
-        (255, 255, 255) # 白
-    ]
 
     # 1. 生成颜色池：从8种标准色中随机选，生成1052个块的颜色（随机轮换）
     color_pool = [random.choice(STANDARD_COLORS) for _ in range(FULL_BLOCK_COUNT)]
@@ -65,3 +66,20 @@ def generate_discrete_block_color_array() -> list[tuple[int, int, int]]:
     print(f"- 最后4个位置（16833~16843）颜色：{color_array[-1]}（复用最后一个块颜色）")
 
     return color_array
+
+def generate_random_colors() -> list[tuple[int, int, int]]:
+    """
+    从指定的8种基础颜色中随机选择并生成颜色列表。
+    
+    返回:
+    - List[tuple(int, int, int)]: RGB 颜色元组列表
+    """
+    
+    num_blocks = Config.DataBlocks
+
+    # 如果 num_blocks 为 0，直接返回空列表
+    if num_blocks <= 0:
+        return []
+
+    # 使用 random.choices 进行随机抽样（允许重复选择）
+    return random.choices(STANDARD_COLORS, k=num_blocks)
