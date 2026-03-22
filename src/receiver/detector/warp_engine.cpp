@@ -126,6 +126,7 @@ __declspec(dllexport) bool ExtractQRCode(
     unsigned char* in_data, int width, int height, int channels,
     unsigned char* out_data, int out_width, int out_height)
 {
+    // 记录开始时间
     auto start = std::chrono::high_resolution_clock::now();
     Mat img(height, width, (channels == 3) ? CV_8UC3 : CV_8UC1, in_data);
     Mat out_img(out_height, out_width, CV_8UC3, out_data);
