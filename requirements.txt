@@ -2,3 +2,4 @@ opencv-python
 numpy
 pillow
 reedsolo
+# RAID6（LEVEL3_40 / encode-file-raid level3_40）需要：pyjerasure

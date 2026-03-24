@@ -1,0 +1,64 @@
+﻿import cv2
+import numpy as np
+import ctypes
+import os
+current_dir = os.path.abspath(os.path.dirname(__file__))
+opencv_bin_path = r"D:\Code of C++\lib\opencv_cuda\x64\vc18\bin"
+if hasattr(os, 'add_dll_directory'):
+    os.add_dll_directory(current_dir)
+    if os.path.exists(opencv_bin_path):
+        os.add_dll_directory(opencv_bin_path)
+dll_candidates = ['warp_engine.dll', 'warp_engine_cpu.dll', 'warp_engine_cuda.dll']
+warp_engine = None
+for dll_name in dll_candidates:
+    path = os.path.join(current_dir, dll_name)
+    if os.path.exists(path):
+        try:
+            warp_engine = ctypes.CDLL(path, winmode=0)
+            print(f">>> 成功加载引擎: {dll_name}")
+            break
+        except Exception as e:
+            print(f"尝试加载 {dll_name} 失败: {e}")
+if warp_engine is None:
+    raise FileNotFoundError("在当前目录下未找到任何有效的 warp_engine DLL 文件。")
+warp_engine.ExtractQRCode.argtypes = [
+    ctypes.POINTER(ctypes.c_uint8),  # in_data (原图指针)
+    ctypes.c_int,                   # width
+    ctypes.c_int,                   # height
+    ctypes.c_int,                   # channels
+    ctypes.POINTER(ctypes.c_uint8),  # out_data (输出缓冲区指针)
+    ctypes.c_int,                   # out_width
+    ctypes.c_int                    # out_height
+]
+warp_engine.ExtractQRCode.restype = ctypes.c_bool
+def process_photo(img_path, out_size=800):
+    """
+    读取单张图片，调用 C++ 引擎进行校正
+    """
+    img = cv2.imread(img_path)
+    if img is None:
+        print(f"错误: 无法读取图像 {img_path}")
+        return None
+    img_bgr = np.ascontiguousarray(img)
+    h, w, c = img_bgr.shape
+    out_img = np.zeros((out_size, out_size, c), dtype=np.uint8)
+    in_ptr = img_bgr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+    out_ptr = out_img.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+    success = warp_engine.ExtractQRCode(in_ptr, w, h, c, out_ptr, out_size, out_size)
+    monitor_size = (1000, 750)
+    cv2.imshow("Engine Monitor: Original + Markers", cv2.resize(img, monitor_size))
+    cv2.imshow("Engine Monitor: Warped Buffer", out_img)
+    return out_img if success else None
+if __name__ == "__main__":
+    test_image = 'test7.png'
+    print(f"正在处理图片: {test_image} ...")
+    result = process_photo(test_image, out_size=1024)
+    if result is not None:
+        print(">>> 识别并校正成功！")
+        cv2.imwrite("result_output.png", result)
+        print("已保存校正后的图片至: result_output.png")
+    else:
+        print(">>> 识别失败。请检查原图窗口中是否找齐了 4 个绿色圆心。")
+    print("\n按任意键退出显示...")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()

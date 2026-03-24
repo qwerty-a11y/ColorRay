@@ -11,3 +11,7 @@ config.json为全局配置文件,模板如下
     "COLOR_MAP": [
     ]
 }
+//现仓库另有 Config.py 与 config.py（内容同），发送端生成器多用 import common.Config；config.json 在库中可为空，常量以代码为准
+//common 内尚有 header.py、CorrectionLevel.py、File.py、RSmodule.py；Raid.py 的 RAID6 依赖 pyjerasure
+//sender 下现有 encoder（如 Encode.py）、generator（frame_gen、drawer、colors_to_matrix、bytes_to_colors）
+//receiver 下现有 detector（warp_engine.cpp、dll、test_dll 脚本）、decoder（image_to_matrix、matrix_to_colors、colors_to_bytes）、rgb_reader（rgb_detect）

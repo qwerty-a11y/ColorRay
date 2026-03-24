@@ -1,197 +1,226 @@
 ﻿#include <iostream>
-#include <opencv2/opencv.hpp>//环境自己配opencv_world42x.dll要同文件夹并且不能带d
+#include <opencv2/opencv.hpp>
 #include <vector>
 #include <cmath>
 #include <algorithm>
-//#include <immintrin.h>//我本来想使用simd加速没有数据依赖的循环，好像用不上？
-//还挺像做线程分配的说是，好像也不行
+#include <chrono>
+#include <iomanip> 
+#include <omp.h>   
 using namespace cv;
 using namespace std;
-
-// 识别模块,寻找标记中心
-// 【修改】：返回 Point3f，x和y是坐标，z用来存储这个定位块的面积(m00)作为置信度
-vector<Point3f> FindMarkerCenters(const Mat& input_img, int channels) {
-    Mat gray;
-    //这一步判断输入图像是不是三通道彩色色图
-    if (channels == 3) {
-        //1把BGR色彩空间转换为HSV色彩空间，分离颜色和亮度。
-        Mat hsv, saturationMask;
-        //2将HSV分离为Hue(色相)Saturation(饱和度)Value(明度)三个单通道图像
-        //因为我只要找定位块，你什么几种颜色和我没关系，我就用色相，不要说什么我色相不行，我这里只判黑白，8色识别是你们的工作
-        cvtColor(input_img, hsv, COLOR_BGR2HSV);
-        vector<Mat> hsv_channels;
-        //对饱和度通道(hsv_channels[1])进行二值化
-        split(hsv, hsv_channels);
-        //这里是把所有饱和度大于180的颜色全部生成白色膜，以后不要问我为啥定位块我不同意做彩色，自己看这里!!!!
-        threshold(hsv_channels[1], saturationMask, 180, 255, THRESH_BINARY);
-        //转换成灰度图
-        cvtColor(input_img, gray, COLOR_BGR2GRAY);
-        //现在我们把所有白色膜区域，全部在灰度图里全部变成白色，，其他的一律定成黑色，这样子整张图就只剩四角定位块和中间零散黑点
-        gray.setTo(255, saturationMask); 
-    } else {
-        //黑白图直接用了
-        gray = input_img.clone();
+void FastIntegralThreshold(const Mat& src, Mat& dst, int blockSize, int C) {
+    dst.create(src.size(), CV_8UC1);
+    Mat sum;
+    integral(src, sum, CV_32S);
+    int half_sz = blockSize / 2;
+    int rows = src.rows;
+    int cols = src.cols;
+    #pragma omp parallel for
+    for (int y = 0; y < rows; ++y) {
+        const uchar* src_ptr = src.ptr<uchar>(y);
+        uchar* dst_ptr = dst.ptr<uchar>(y);
+        int y1 = std::max(0, y - half_sz);
+        int y2 = std::min(rows, y + half_sz + 1);
+        const int* sum_y1 = sum.ptr<int>(y1);
+        const int* sum_y2 = sum.ptr<int>(y2);
+        for (int x = 0; x < cols; ++x) {
+            int x1 = std::max(0, x - half_sz);
+            int x2 = std::min(cols, x + half_sz + 1);
+            int count = (y2 - y1) * (x2 - x1); 
+            int s = sum_y2[x2] - sum_y2[x1] - sum_y1[x2] + sum_y1[x1];
+            if (src_ptr[x] * count <= s - C * count) {
+                dst_ptr[x] = 255;
+            } else {
+                dst_ptr[x] = 0;
+            }
+        }
     }
-    //做局部二值化，因为光照不均，别拿一个手电筒反驳我，拿手电筒举例子说“啊~~~，抗反光没用~~~”，你觉得没用你来改
+}
+vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {
+    Mat gray;
+    if (ch == 3) {
+        cvtColor(input, gray, COLOR_BGR2GRAY);
+    } else {
+        gray = input.clone();
+    }
     Mat binary;
-    //因为总是一边亮一边暗，全局的话会暗处全变黑，所以局部
-    //THRESH_BINARY_INV将图像反相，黑变白，然后找白岛
-    //41是局部阈值像素块大小，这个可以改
-    //10是微调常数，也可以改
-    adaptiveThreshold(gray, binary, 255, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY_INV, 41, 10);
-    //现在定义一个核心，大小为2*2，别乱改，我调了一下午从30找到2
-    //| | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-    //V V V V V V V V V V V V V V V V V V V V V V V V V V V V V V 
-    //                 不要乱动！！！！！！！！
-    Mat kernel = getStructuringElement(MORPH_CROSS, Size(2, 2));
-    //
+    FastIntegralThreshold(gray, binary, 101, 15);
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(2, 2));
     Mat closed_binary;
-    //这步ai的主意，但是效果很好，就别删了
-    /*
-    大致原理就是形态学闭运算，高分辨率我们二值化后，定位块可能撕裂，因为他是白的，摩尔纹会撕裂他
-    我们把它给缝起来，抗摩尔纹干扰，这样子定位框就是闭合的了，顺手杀噪点
-    */
-
-    //这一步是机密，别的组都想不到的，不要外传上下模块都不要外传，我们的锐度目前是最高的  
-    morphologyEx(binary, closed_binary, MORPH_CLOSE, kernel);
-
-    // 存储轮廓点的集合 (contours) 和轮廓层级结构 (hierarchy)，识别是ai想的
+    morphologyEx(binary, closed_binary, MORPH_OPEN, kernel);
     vector<vector<Point>> contours;
     vector<Vec4i> hierarchy;
     findContours(closed_binary, contours, hierarchy, RETR_TREE, CHAIN_APPROX_SIMPLE);
-    // 在二值图上寻找所有的白岛，所以你原来的彩图边框必须是白色的！！！！！别问我为啥不能是黑色
-    // RETR_TREE：记录轮廓之间的“父子嵌套关系”。
-    vector<Point3f> centers;//存符合条件的中心点和它的面积
-    for (size_t i=0;i<contours.size();i++) {
-        //计录i的第一个子轮廊，所以我才说叫你们把定位块画大一点，不要一个个都说“变彩色不就好了嘛~~~~~”
-        int kid_idx=hierarchy[i][2];
-        int cnt = 0;//层数
-        while(kid_idx!=-1) {//类似跳表，一路进去数几层，其实2层就能跳出来了
+    vector<Point3f> centers;
+    for (size_t i = 0; i < contours.size(); i++) {
+        int kid_idx = hierarchy[i][2];
+        int cnt = 0;
+        while (kid_idx != -1) {
             cnt++;
-            kid_idx=hierarchy[kid_idx][2];
-            if(cnt>=2)break;//保证性能
+            kid_idx = hierarchy[kid_idx][2];
+            if (cnt >= 2) break;
         }
-        if (cnt >= 2) {//两层了，杀掉无嵌套噪点
+        if (cnt >= 2) {
             Moments mu = moments(contours[i], false);
-            if (mu.m00 > 500) //计算标记快x，y坐标，这个数值只能往大的改，这个判断不能删
-                // 【修改】：把面积 mu.m00 塞进 z 坐标里带出去
-                centers.push_back(Point3f(mu.m10 / mu.m00, mu.m01 / mu.m00, mu.m00));
+            if (mu.m00 >= 700) {
+                centers.push_back(Point3f((float)(mu.m10 / mu.m00), (float)(mu.m01 / mu.m00), (float)mu.m00));
+            }
         }
     }
-    vector<Point3f> merged;//存最后的定位点
-    //合并去重。防止距离过进产生多个定位点干扰
+    vector<Point3f> merged;
     for (const auto& pt : centers) {
         bool is_new = true;
         for (auto& m : merged) {
-            // 注意：距离只算 x 和 y
-            if (norm(Point2f(pt.x, pt.y) - Point2f(m.x, m.y)) < 100.0) { 
-                is_new = false; 
-                // 距离太近融合时，保留面积更大的那个作为真身
+            if (norm(Point2f(pt.x, pt.y) - Point2f(m.x, m.y)) < 150.0) {
+                is_new = false;
                 if (pt.z > m.z) m = pt;
-                break; 
+                break;
             }
         }
         if (is_new) merged.push_back(pt);
     }
     return merged;
 }
-
+Point3f FindSingleMarkerInROI(const Mat& roi_img, int ch) {
+    Mat gray;
+    if (ch == 3) {
+        cvtColor(roi_img, gray, COLOR_BGR2GRAY);
+    } else {
+        gray = roi_img.clone();
+    }
+    Mat binary;
+    FastIntegralThreshold(gray, binary, 51, 17);
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(2, 2));
+    Mat closed_binary;
+    morphologyEx(binary, closed_binary, MORPH_OPEN, kernel);
+    vector<vector<Point>> contours;
+    vector<Vec4i> hierarchy;
+    findContours(closed_binary, contours, hierarchy, RETR_TREE, CHAIN_APPROX_SIMPLE);
+    Point3f best_center(-1, -1, -1);
+    float max_area = 0;
+    for (size_t i = 0; i < contours.size(); i++) {
+        int kid_idx = hierarchy[i][2];
+        int cnt = 0;
+        while (kid_idx != -1) {
+            cnt++;
+            kid_idx = hierarchy[kid_idx][2];
+            if (cnt >= 2) break;
+        }
+        if (cnt >= 2) {
+            Moments mu = moments(contours[i], false);
+            if (mu.m00 > 100 && mu.m00 > max_area) { 
+                max_area = (float)mu.m00;
+                best_center = Point3f((float)(mu.m10 / mu.m00), (float)(mu.m01 / mu.m00), (float)mu.m00);
+            }
+        }
+    }
+    return best_center;
+}
 extern "C" {
-//接口
+static vector<Point2f> prev_corners; 
+static bool use_tracking = false;
+static double total_time_ms = 0;
+static long long frame_counter = 0;
+static bool thread_pool_init = false;
 __declspec(dllexport) bool ExtractQRCode(
     unsigned char* in_data, int width, int height, int channels,
-    unsigned char* out_data, int out_width, int out_height) 
+    unsigned char* out_data, int out_width, int out_height)
 {
-    //把py传进来的指针变成opencv能处理的mat对象，这里0拷贝，速度会快一点
+    // 记录开始时间
+    auto start = std::chrono::high_resolution_clock::now();
     Mat img(height, width, (channels == 3) ? CV_8UC3 : CV_8UC1, in_data);
-    Mat out_img(out_height, out_width, CV_8UC3, out_data);//彩色图
-    //缩放比例，杀摩尔纹，以及提高计算速度，4k图要找到什么时候，我只能搜小处理
-    float scale = 800.0f / max(width, height);
-    Mat small_img;//小图像
-    //ai协助的INTER_AREA：区域插值法，这是缩小图像时最能抗锯齿，抗摩尔纹的插值方式。
-    resize(img, small_img, Size(), scale, scale, INTER_AREA);
-    //然后我们用识别模块，开始找
-    vector<Point3f> small_centers = FindMarkerCenters(small_img, channels);
-    //这个就是定位块中心了
-    //接下来是图像拉伸，拉回正常的位置
-    vector<Point3f> centers;
-    for (auto pt : small_centers) //c++17的绑定
-        centers.push_back(Point3f(pt.x / scale, pt.y / scale, pt.z));
-
-//| | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-//V V V V V V V V V V V V V V V V V V V V V V V V V V V V V V     
-    //调试模块，画定位点的，想看定位点取消注释
-    Scalar drawColor(0, 255, 0);
-    for (size_t i = 0; i < centers.size(); i++) {
-        Point2f draw_pt(centers[i].x, centers[i].y);
-        circle(img, draw_pt, 12, drawColor, 2);
-        string label = to_string(i);
-        putText(img, label, Point(draw_pt.x + 10, draw_pt.y + 10), 
-                FONT_HERSHEY_SIMPLEX, 1.0, drawColor, 2);
-    }
-
-    Point2f tl, tr, br, bl;//四角变量
-    if (centers.size() >= 4) {
-        //2.0新增模块，我做了一个天才般的设计，近似中心杀掉多干扰块
-        //程序可能错误的识别到多个定位块
-        //但是无论如何这些错定位块都是在二维码内部的，所以实际上对所有定位块求中心的得到的中心一定在内部
-        //然后排序求出子坐标四个点最大的分支，得到准确的四个点
-        //再重新计算正确的中心，ai都想不到，我想到了
-        Point2f approx_center(0, 0);
-        for(auto p : centers) approx_center += Point2f(p.x, p.y);
-        approx_center.x /= centers.size(); approx_center.y /= centers.size();
-        if (centers.size() > 4) {
-            //距离近似中心的远近降序排列
-            sort(centers.begin(), centers.end(), [&approx_center](Point3f a, Point3f b) {
-                return norm(Point2f(a.x, a.y) - approx_center) > norm(Point2f(b.x, b.y) - approx_center);
-            });
-            //隔离中间噪点！
-            centers.resize(4); 
-        }
-        //重新计算绝对中心！
-        Point2f exact_center(0, 0);
-        for(auto p : centers) exact_center += Point2f(p.x, p.y);
-        exact_center.x /= 4.0f; exact_center.y /= 4.0f;
-        //2.0新增全新抗透视反转模块：相似定理原理
-        //如果透视导致近处的块变大，那么它到中心的距离也会按等比例拉长
-        //用面积/距离的平方，就能抵消透视畸变
-        //右下角比值永远是全场最小的
-        int br_idx = -1;
-        float min_ratio = 1e9;
+    Mat out_img(out_height, out_width, CV_8UC3, out_data);
+    vector<Point2f> current_corners;
+    bool tracking_success = false;
+    if (use_tracking && prev_corners.size() == 4) {
+        tracking_success = true;
+        int roi_size = 200; 
+        current_corners.resize(4); 
+        bool track_failed_flag = false;
+        #pragma omp parallel for
         for (int i = 0; i < 4; i++) {
-            float dist = norm(Point2f(centers[i].x, centers[i].y) - exact_center);
-            float area = centers[i].z;//m00面积
-            float ratio = area / (dist * dist); 
-            if (ratio < min_ratio) {
-                min_ratio = ratio;
-                br_idx = i;//比值最小的点是BR
+            if (track_failed_flag) continue; 
+            Point2f pt = prev_corners[i];
+            int rx = std::max(0, (int)pt.x - roi_size / 2);
+            int ry = std::max(0, (int)pt.y - roi_size / 2);
+            int rw = std::min(width - rx, roi_size);
+            int rh = std::min(height - ry, roi_size);
+            Rect roi_rect(rx, ry, rw, rh);
+            Mat roi_img = img(roi_rect);
+            Point3f local_center = FindSingleMarkerInROI(roi_img, channels);
+            
+            if (local_center.z > 0) {
+                current_corners[i] = Point2f(local_center.x + rx, local_center.y + ry);
+            } else {
+                track_failed_flag = true;
             }
         }
-        Point2f br_point = Point2f(centers[br_idx].x, centers[br_idx].y);
-        //围成一个凸四边形
-        vector<Point2f> sorted_pts;
-        for(auto p : centers) sorted_pts.push_back(Point2f(p.x, p.y));
-        sort(sorted_pts.begin(), sorted_pts.end(), [&exact_center](Point2f a, Point2f b) {
-            return atan2(a.y - exact_center.y, a.x - exact_center.x) < atan2(b.y - exact_center.y, b.x - exact_center.x);
-        });
-        int sorted_br_idx = 0;
-        for(int i = 0; i < 4; i++) {
-            if(norm(sorted_pts[i] - br_point) < 1.0f) { 
-                sorted_br_idx = i;
-                break;
+        if (track_failed_flag) {
+            tracking_success = false;
+            current_corners.clear();
+        }
+    }
+    if (!tracking_success) {
+        float scale = 1100.0f / (float)max(width, height);
+        Mat small_img;
+        resize(img, small_img, Size(), scale, scale, INTER_AREA);
+        vector<Point3f> small_centers = FindMarkerCenters(small_img, channels);
+        vector<Point3f> centers;
+        for (auto pt : small_centers)
+            centers.push_back(Point3f(pt.x / scale, pt.y / scale, pt.z));
+        if (centers.size() >= 4) {
+            Point2f approx_center(0, 0);
+            for (auto p : centers) approx_center += Point2f(p.x, p.y);
+            approx_center.x /= (float)centers.size(); approx_center.y /= (float)centers.size();
+            if (centers.size() > 4) {
+                sort(centers.begin(), centers.end(), [&approx_center](Point3f a, Point3f b) {
+                    return norm(Point2f(a.x, a.y) - approx_center) > norm(Point2f(b.x, b.y) - approx_center);
+                });
+                centers.resize(4);
+            }
+            Point2f exact_center(0, 0);
+            for (auto p : centers) exact_center += Point2f(p.x, p.y);
+            exact_center.x /= 4.0f; exact_center.y /= 4.0f;
+            int br_idx = -1;
+            float min_ratio = 1e9;
+            for (int i = 0; i < 4; i++) {
+                float dist = (float)norm(Point2f(centers[i].x, centers[i].y) - exact_center);
+                float ratio = centers[i].z / (dist * dist);
+                if (ratio < min_ratio) { min_ratio = ratio; br_idx = i; }
+            }
+            Point2f br_point = Point2f(centers[br_idx].x, centers[br_idx].y);
+            vector<Point2f> sorted_pts;
+            for (auto p : centers) sorted_pts.push_back(Point2f(p.x, p.y));
+            sort(sorted_pts.begin(), sorted_pts.end(), [&exact_center](Point2f a, Point2f b) {
+                return atan2(a.y - exact_center.y, a.x - exact_center.x) < atan2(b.y - exact_center.y, b.x - exact_center.x);
+            });
+            int s_br_idx = 0;
+            for (int i = 0; i < 4; i++) {
+                if (norm(sorted_pts[i] - br_point) < 1.0f) { s_br_idx = i; break; }
+            }
+            current_corners.push_back(sorted_pts[(s_br_idx + 2) % 4]); // TL
+            current_corners.push_back(sorted_pts[(s_br_idx + 3) % 4]); // TR
+            current_corners.push_back(sorted_pts[s_br_idx]);           // BR
+            current_corners.push_back(sorted_pts[(s_br_idx + 1) % 4]); // BL
+        }
+    }
+    if (current_corners.size() == 4) {
+        if (use_tracking) {
+            float alpha = 0.95f; 
+            float deadzone_radius = 1.0f; 
+            for (int i = 0; i < 4; i++) {
+                float dist = (float)norm(current_corners[i] - prev_corners[i]);
+                if (dist < deadzone_radius) {
+                    current_corners[i] = prev_corners[i];
+                } else {
+                    current_corners[i] = current_corners[i] * alpha + prev_corners[i] * (1.0f - alpha);
+                }
             }
         }
-        //2.0致命错误修复，补上了前面删错的代码
-        br = sorted_pts[sorted_br_idx];
-        bl = sorted_pts[(sorted_br_idx + 1) % 4]; 
-        tl = sorted_pts[(sorted_br_idx + 2) % 4];
-        tr = sorted_pts[(sorted_br_idx + 3) % 4]; 
-        float pad_x = out_width * 0.05225; 
-        float pad_y = out_height * 0.05225;
-        //| | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
-        //V V V V V V V V V V V V V V V V V V V V V V V V V V V V V V 
-        //因为物理中心不是标准的正方形，会有微小的内推需求，所以人工调参，补偿变形
-        float correct = out_width * 0.0160f; //谁动这个参数我砍谁，我调了一下午，第四个定位块中心不准变
+        prev_corners = current_corners;
+        use_tracking = true;
+        Point2f tl = current_corners[0], tr = current_corners[1], br = current_corners[2], bl = current_corners[3];
+        float pad_x = out_width * 0.05225f, pad_y = out_height * 0.05225f, correct = out_width * 0.016f; 
         vector<Point2f> src = { tl, tr, br, bl };
         vector<Point2f> dst = { 
             Point2f(pad_x, pad_y), 
@@ -201,7 +230,19 @@ __declspec(dllexport) bool ExtractQRCode(
         };
         Mat M = getPerspectiveTransform(src, dst);
         warpPerspective(img, out_img, M, Size(out_width, out_height), INTER_NEAREST);
-    } 
+    } else {
+        use_tracking = false;
+        return false;
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    double current_duration = std::chrono::duration<double, std::milli>(end - start).count();
+    total_time_ms += current_duration;
+    frame_counter++;
+    double average_duration = total_time_ms / (double)frame_counter;
+    std::cout << ">>> [CPU Warp Engine] Mode: " << (tracking_success ? "Tracking" : "Global") 
+              << " | Current: " << std::fixed << std::setprecision(1) << current_duration << " ms"
+              << " | Average: " << std::fixed << std::setprecision(2) << average_duration << " ms" 
+              << " (" << frame_counter << " frames)" << "\n";
     return true;
 }
 }

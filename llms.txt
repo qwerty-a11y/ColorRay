@@ -2,7 +2,7 @@
 A Python-based system that transmits data via color-encoded QR video streams.
 
 ## Technical Architecture
-- Language: Python 3.10-12 (Environment managed via venv)
+- Language: Python 3.10+
 - Key Libraries: OpenCV (cv2) for image processing, Numpy for RAID logic.
 - Redundancy: Inter-frame RAID 5/6 + Intra-frame CRC16.
 - Color Palette: 8 pure colors (R, G, B, C, M, Y, K, W) at RGB levels 0 or 255.
@@ -17,11 +17,21 @@ A Python-based system that transmits data via color-encoded QR video streams.
 - Ensure any changes to the sender's encoding are mirrored in the receiver's decoding logic.
 - Do not use Docker-specific commands.
 
-## 3.10前新增模块
-- `src/sender/generator/frame_gen.py`：生成固定结构的颜色矩阵和边框标记。
-- `src/sender/generator/drawer.py`：将颜色矩阵渲染为图片。
-- `src/sender/generator/colors_to_matrix.py`：颜色流填充矩阵，支持异常处理。
-- `src/sender/generator/bytes_to_colors.py`：字节流与颜色流互转，自动补齐。
-- `src/receiver/detector/warp_engine.cpp`：OpenCV实现的定位块检测，返回中心及面积置信度。
-- `src/common/config.py`：全局配置文件，支持JSON动态加载，集中管理二维码参数、颜色表、图像尺寸、纠错参数等，供各模块统一引用。
-- `src/common/crc16.py`：实现CRC-16-CCITT (0x1021) 校验算法，支持文件和字节流校验，适用于帧内数据完整性校验。
+3.10前新增模块
+- src/sender/generator/frame_gen.py：生成固定结构的颜色矩阵和边框标记。
+- src/sender/generator/drawer.py：将颜色矩阵渲染为图片。
+- src/sender/generator/colors_to_matrix.py：颜色流填充矩阵，支持异常处理。
+- src/sender/generator/bytes_to_colors.py：字节流与颜色流互转，自动补齐。
+- src/receiver/detector/warp_engine.cpp：OpenCV实现的定位块检测，返回中心及面积置信度。
+- src/common/config.py：全局配置文件，支持JSON动态加载，集中管理二维码参数、颜色表、图像尺寸、纠错参数等，供各模块统一引用。
+- src/common/crc16.py：实现CRC-16-CCITT (0x1021) 校验算法，支持文件和字节流校验，适用于帧内数据完整性校验。
+
+- 依赖：Raid.py 中 RAID-6 等用 pyjerasure；RSmodule.py 用 reedsolo。requirements.txt 以仓库为准；缺 pyjerasure 则 RAID 相关无法运行。
+- Config：另有与 config.py 同内容的 Config.py；发送端生成器多用 import common.Config。仓库里 config.json 当前为空占位。
+- 对称性：QRSize、DataBlocks=16796（frame 内 48 格为帧头占位，与 header 落位一致，不参与互质 payload）与 colors_to_matrix、matrix_to_colors 须一致；整帧位打包见 frame_pipeline。
+- tribit 总位 = DataBlocks×3；若 %8≠0，末字节仅低位进图。须：`MAX_USER=DataSize-2-1`（多 1 字节尾填）+ `_mask_unused_high_bits_last_byte`，否则 CRC 低字节高半字节无法传输、往返失败。
+- 帧网格：frame_gen 为 137×137（QRSize+4）；image_to_matrix **test**：1644 对齐后每 12×12 格取 **中心 1 像素** 二值化（抗 drawer 灰边导致 CRC16 失败）；**normal**：133×11 池化实拍链。
+- frame_pipeline：cv2 仅 MP4 相关函数内 `_import_cv2()` 懒加载，PNG 编解码可不装 opencv。
+- header.FrameHeader：PayloadLen **16bit**（0xFFFF=满帧 DataSize）；40bit 布局见 header.py（与旧 12bit 帧头**不兼容**）。ToBits 用 048b 固长。
+- 其它 common：header.py（48 bit 帧头）、CorrectionLevel.py（Raid/RS 枚举）、File.py、Raid.py、RSmodule.py。
+- 接收链：image_to_matrix.py → matrix_to_colors.py → colors_to_bytes.py；rgb_reader/rgb_detect.py 为可选八色实时检测。
