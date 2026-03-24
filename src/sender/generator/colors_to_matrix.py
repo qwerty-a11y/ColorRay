@@ -16,7 +16,7 @@ class NoEmptyPositionError(ValueError):
 def colors_to_matrix(
     matrix: list[list[tuple[int, int, int] | None]],
     color_list: list[tuple[int, int, int]],
-    patch_size: int = Config.DataBlocks, #现版本方案为固定值16844
+    patch_size: int = Config.FrameDataBlocks, #现版本方案为固定值16844
     start_pos: int = 0,  # 填充起始一维索引（默认从0开始）
     step: int = 68        # 互质步长，建议选择68
 ) -> list[list[tuple[int, int, int] | None]]:
@@ -34,7 +34,7 @@ def colors_to_matrix(
     :raises NoEmptyPositionError: 无空余位置但颜色列表未填完
     """
     N = Config.QRSize + 4  # 矩阵固定边长
-    patch_size = Config.DataBlocks #现版本方案为固定值16844
+    patch_size = Config.FrameDataBlocks #现版本方案为固定值16844
     total_pos = N * N  # 矩阵总位置数
 
     matrix = copy.deepcopy(matrix)  # 避免修改原矩阵
