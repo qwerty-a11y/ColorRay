@@ -5,3 +5,13 @@ data文件自用，不要上传到仓库
 每次做出重大编辑时要同时修改llms.txt
 环境控制见requirements.txt
 data文件通过群内文件联系，data的reminder.txt文件也在群中
+//重要：
+//命名特征： module_solve.png
+            module_solve_decoded.png
+            module_solve_colorray.mp4
+请在接下来的流程中再修改
+//如果对定位块版本有异议的请自行迭代
+//编码指令：
+python run.py file-to-video -i module_solve.png -o module_solve_colorray.mp4 --fps 2
+//解码指令（内含几种方案保证了解码成功率，调优问题恐怕要你们试着去均衡一下）：
+python run_decode.py mp4 -i O:\colorray\module_solve_colorray.mp4 -o O:\colorray\module_solve_decoded.png --run-mode auto

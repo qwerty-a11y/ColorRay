@@ -35,3 +35,8 @@ A Python-based system that transmits data via color-encoded QR video streams.
 - header.FrameHeader：PayloadLen **16bit**（0xFFFF=满帧 DataSize）；40bit 布局见 header.py（与旧 12bit 帧头**不兼容**）。ToBits 用 048b 固长。
 - 其它 common：header.py（48 bit 帧头）、CorrectionLevel.py（Raid/RS 枚举）、File.py、Raid.py、RSmodule.py。
 - 接收链：image_to_matrix.py → matrix_to_colors.py → colors_to_bytes.py；rgb_reader/rgb_detect.py 为可选八色实时检测。
+- 收端聚合：`decode_pipeline.py`（复用 `frame_pipeline` 解码函数）+ 入口 `run_decode.py`（子命令 png / frames / mp4 / extract-mp4）。
+- MP4 收端：`decode_mp4_to_file` 在 `TemporaryDirectory` 的 `with` 块内完成**抽帧与全部 PNG 解码**，避免临时目录销毁后仍读路径导致失败。
+- 视频帧落盘：`VideoCapture` 为 BGR，须 `cvtColor(BGR2RGB)` 后由 **PIL** 存 PNG，与 `drawer` 的 RGB 一致；避免 `cv2.imwrite` 与 PIL 混用引发通道/观感和 tribit 错误。
+- `image_to_matrix`：`test`（中心 1 像素）、`test_robust`（12×12 多数表决）、`test_robust_inner`（中心 8×8 多数，抗 4:2:0 色度渗边）、`test_robust_mean`（格内通道均值≥128）、`normal`（实拍池化链）。`from-mp4` / `run_decode.py mp4` 支持 **`--run-mode auto`**：逐帧按序尝试前四种直至 CRC16 通过（**仅平铺 Mode=0**；RAID 须固定 run_mode）。
+- CLI：`run.py` 中 `file-to-video` 与 `encode-file-to-mp4` 等价；`from-mp4` 与 `run_decode.py mp4` 等价；`--run-mode` 取值见 `frame_pipeline._CRC_RUN_MODES` 及 mp4 的 `auto`。

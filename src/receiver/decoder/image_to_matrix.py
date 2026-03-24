@@ -36,25 +36,53 @@ def _prepare_square_then_resize_for_grid(img: Image.Image) -> Image.Image:
     return img.resize((target, target), Image.Resampling.NEAREST)
 
 
-def _matrix_from_exact_drawer_grid(img: Image.Image) -> list[list[tuple[int, int, int]]]:
+def _matrix_from_exact_drawer_grid(
+    img: Image.Image,
+    *,
+    majority_cell: bool = False,
+    inner_margin: int = 0,
+    cell_vote: str = "majority",
+) -> list[list[tuple[int, int, int]]]:
     """
     与 drawer（12×12 单元、137×137 格）对齐。
-    每格只取几何中心像素 (6,6)，避免 need_border 的灰色 outline 拉偏整块均值导致 tribit/CRC 失败。
+    majority_cell=False：每格只取几何中心像素 (6,6)，避免 need_border 的灰色 outline 拉偏整块均值。
+    majority_cell=True：在格内子块上二值化（抗 MP4 模糊）；inner_margin>0 时取中心子块（减轻 4:2:0 色度边缘渗透）。
+    cell_vote：majority=过半像素>=128；mean=通道均值>=128。
     """
     cell = 12
     grid_n = Config.QRSize + 4
     target = grid_n * cell
-    cy = cx = cell // 2
 
     arr = np.array(img.convert("RGB"), dtype=np.uint8)
     if arr.shape[0] != target or arr.shape[1] != target:
         raise ValueError(
             f"内部错误：期望 {target}×{target}，实际 {arr.shape[1]}×{arr.shape[0]}"
         )
-    row_idx = np.arange(grid_n, dtype=np.intp) * cell + cy
-    col_idx = np.arange(grid_n, dtype=np.intp) * cell + cx
-    sampled = arr[row_idx[:, np.newaxis], col_idx, :]
-    binary_array = np.where(sampled >= 128, 255, 0).astype(np.uint8)
+    if inner_margin < 0 or inner_margin * 2 >= cell:
+        raise ValueError("inner_margin 须满足 0 <= 2*inner_margin < cell")
+
+    if majority_cell:
+        sub_side = cell - 2 * inner_margin
+        need = (sub_side * sub_side) // 2 + 1
+        binary_array = np.zeros((grid_n, grid_n, 3), dtype=np.uint8)
+        for r in range(grid_n):
+            for c in range(grid_n):
+                y0, x0 = r * cell + inner_margin, c * cell + inner_margin
+                block = arr[y0 : y0 + sub_side, x0 : x0 + sub_side, :]
+                for ch in range(3):
+                    plane = block[:, :, ch]
+                    if cell_vote == "mean":
+                        binary_array[r, c, ch] = 255 if float(np.mean(plane)) >= 128.0 else 0
+                    else:
+                        binary_array[r, c, ch] = (
+                            255 if np.count_nonzero(plane >= 128) >= need else 0
+                        )
+    else:
+        cy = cx = cell // 2
+        row_idx = np.arange(grid_n, dtype=np.intp) * cell + cy
+        col_idx = np.arange(grid_n, dtype=np.intp) * cell + cx
+        sampled = arr[row_idx[:, np.newaxis], col_idx, :]
+        binary_array = np.where(sampled >= 128, 255, 0).astype(np.uint8)
 
     final_size = 137
     final_array = np.full((final_size, final_size, 3), 255, dtype=np.uint8)
@@ -70,6 +98,9 @@ def image_to_matrix(image_path: str, run_mode="normal") -> list[list[tuple[int, 
     :param run_mode:
         - ``test``：本仓库 PNG / MP4 帧 / 屏录。1644 对齐后按格取 **中心 1 像素** 二值化（抗 drawer 灰边）。
           若仍用 LANCZOS+高斯池化，tribit 会被抹糊，**CRC16 必失败**。
+        - ``test_robust``：每格 12×12 内 **多数表决**（有损 MP4）。
+        - ``test_robust_inner``：每格中心 8×8 **多数表决**（减轻 H.264 4:2:0 色度在格边界上的串扰）。
+        - ``test_robust_mean``：每格 12×12 通道 **均值** ≥128 判白（高斯状模糊时偶发优于多数表决）。
         - ``normal``：未对齐实拍，保留 HSV+池化流水线。
     """
     try:
@@ -80,7 +111,22 @@ def image_to_matrix(image_path: str, run_mode="normal") -> list[list[tuple[int, 
 
     if run_mode == "test":
         img_ready = _prepare_square_then_resize_for_grid(img)
-        return _matrix_from_exact_drawer_grid(img_ready)
+        return _matrix_from_exact_drawer_grid(img_ready, majority_cell=False)
+    if run_mode == "test_robust":
+        img_ready = _prepare_square_then_resize_for_grid(img)
+        return _matrix_from_exact_drawer_grid(
+            img_ready, majority_cell=True, inner_margin=0, cell_vote="majority"
+        )
+    if run_mode == "test_robust_inner":
+        img_ready = _prepare_square_then_resize_for_grid(img)
+        return _matrix_from_exact_drawer_grid(
+            img_ready, majority_cell=True, inner_margin=2, cell_vote="majority"
+        )
+    if run_mode == "test_robust_mean":
+        img_ready = _prepare_square_then_resize_for_grid(img)
+        return _matrix_from_exact_drawer_grid(
+            img_ready, majority_cell=True, inner_margin=0, cell_vote="mean"
+        )
 
     import cv2
 

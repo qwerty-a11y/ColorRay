@@ -1,6 +1,9 @@
 """
-ColorRay 编码流水线：帧头写入/读出网格，串联 generate_frame、colors_to_matrix、drawer、
+ColorRay **发端（编码）主入口**：帧头写入/读出网格，串联 generate_frame、colors_to_matrix、drawer、
 image_to_matrix、matrix_to_colors 与 CRC16 线格式负载。
+
+收端流水线说明与专用 CLI 见 ``decode_pipeline.py`` / 仓库根 ``run_decode.py``（子命令：
+png / frames / mp4 / extract-mp4）。
 --------------------------
 1. 对要传输的文件编码，得到多帧图，再合成 MP4（发端本机）。
 2. 在屏幕上播放该 MP4，用录屏软件录制（或数字拷贝同一 MP4 文件，见下）。
@@ -62,6 +65,26 @@ def _import_cv2():
             "（仅 PNG 编解码可不装 opencv，例如 encode、decode、roundtrip。）"
         ) from e
     return cv2
+
+
+def _write_mp4_frame_bgr_to_png_for_decode(bgr_frame, path: str) -> None:
+    """VideoCapture 为 BGR；解码链用 PIL 读 RGB。与 drawer 出图一致，避免 cv2.imwrite 通道约定差异。"""
+    cv2 = _import_cv2()
+    from PIL import Image
+
+    rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+    Image.fromarray(rgb).save(path)
+
+
+# 传给 image_to_matrix；不含 auto（auto 仅在 decode_mp4_to_file 内逐帧尝试下列子策略）
+_CRC_RUN_MODES = ("test", "test_robust", "test_robust_inner", "test_robust_mean", "normal")
+# MP4 有损编码时逐帧按序尝试，直至 CRC16 通过（仅 Mode=0）
+_MP4_AUTO_STRATEGIES: tuple[str, ...] = (
+    "test",
+    "test_robust",
+    "test_robust_inner",
+    "test_robust_mean",
+)
 
 CRC16_LEN = 2
 # tribit 共 DataBlocks×3 位；若 (DataBlocks*3)%8!=0，末字节仅部分位进图，须留 1 字节作尾填充，
@@ -537,8 +560,7 @@ def extract_mp4_to_png_dir(mp4_path: str, out_dir: str) -> int:
             if not ok:
                 break
             fp = os.path.join(out_dir, f"frame_{n:06d}.png")
-            if not cv2.imwrite(fp, frame):
-                raise RuntimeError(f"写入失败: {fp}")
+            _write_mp4_frame_bgr_to_png_for_decode(frame, fp)
             n += 1
     finally:
         cap.release()
@@ -553,13 +575,14 @@ def decode_mp4_to_file(
 ) -> int:
     """
     按播放顺序逐帧解码。Mode=0：直接拼接各帧负载；Mode=1..3：RAID，须在与 mp4 同目录存在 original_size.txt。
+    run_mode=auto：仅 Mode=0；逐帧在 test / test_robust / test_robust_inner / test_robust_mean 中尝试直至 CRC 通过。
     """
     cv2 = _import_cv2()
     mp4_path = os.path.abspath(mp4_path)
     cap = cv2.VideoCapture(mp4_path)
     if not cap.isOpened():
         raise ValueError(f"无法打开视频: {mp4_path}")
-    rows: list[tuple[bytes, FrameHeader]] = []
+    fps: list[str] = []
     try:
         with tempfile.TemporaryDirectory(prefix="colorray_f_") as td:
             idx = 0
@@ -568,66 +591,79 @@ def decode_mp4_to_file(
                 if not ok:
                     break
                 fp = os.path.join(td, f"f_{idx:06d}.png")
-                if not cv2.imwrite(fp, frame):
-                    raise RuntimeError("临时帧写入失败")
+                _write_mp4_frame_bgr_to_png_for_decode(frame, fp)
+                fps.append(fp)
+                idx += 1
+            if not fps:
+                raise ValueError("视频中未读到帧")
+
+            # 须在临时目录仍存在时读完所有 PNG（此前在 with 外解码会导致文件已删）
+            if run_mode == "auto":
+                return _decode_mp4_mode0_auto_strategies(fps, out_path)
+
+            rows: list[tuple[bytes, FrameHeader]] = []
+            for fp in fps:
                 wire, hdr = decode_png_to_wire_payload(fp, run_mode=run_mode)
                 rows.append((wire, hdr))
-                idx += 1
+
+            hdr0 = rows[0][1]
+            if hdr0.Mode == 0:
+                parts: list[bytes] = []
+                for fi, (w, _) in enumerate(rows):
+                    try:
+                        parts.append(_strip_and_verify_crc(w))
+                    except ValueError as e:
+                        raise ValueError(f"第 {fi} 帧（0 起）CRC16 校验失败") from e
+                raw = b"".join(parts)
+                out_path_abs = os.path.abspath(out_path)
+                od = os.path.dirname(out_path_abs)
+                if od:
+                    os.makedirs(od, exist_ok=True)
+                Path(out_path_abs).write_bytes(raw)
+                return len(raw)
+
+            mp4_dir = os.path.dirname(mp4_path)
+            manifest = Path(mp4_dir) / "original_size.txt"
+            if not manifest.is_file():
+                raise ValueError(
+                    "RAID 视频解码需要与 mp4 同目录下的 original_size.txt（encode-file-to-mp4 已复制）"
+                )
+            orig_len = int(manifest.read_text(encoding="ascii").strip())
+            hdr_mode = hdr0.Mode
+            for _w, hdr in rows:
+                if hdr.Mode != hdr_mode:
+                    raise ValueError("各帧 Mode 不一致")
+            kind, k_data = _header_mode_to_k_and_kind(hdr_mode)
+            n_disks = k_data + (1 if kind == "raid5" else 2)
+            if len(rows) % n_disks != 0:
+                raise ValueError(
+                    f"总帧数 {len(rows)} 不能整除每 RAID 组盘数 {n_disks}"
+                )
+            out_chunks: list[bytes] = []
+            for g in range(0, len(rows), n_disks):
+                slot = rows[g : g + n_disks]
+                disks: list[list[bytes | None]] = [
+                    [_wire_ljust_datasize(slot[d][0])] for d in range(n_disks)
+                ]
+                if kind == "raid5":
+                    rec = Raid5Decode(disks)
+                else:
+                    rec = Raid6Decode(disks)
+                for di in range(k_data):
+                    blk = rec[di][0]
+                    if blk is None:
+                        raise ValueError(f"RAID 组 {g // n_disks} 数据盘 {di} 无法恢复")
+                    _w, hdr_di = slot[di]
+                    out_chunks.append(_user_from_recovered_raid_block(blk, hdr_di))
+            raw = b"".join(out_chunks)[:orig_len]
+            out_path_abs = os.path.abspath(out_path)
+            od = os.path.dirname(out_path_abs)
+            if od:
+                os.makedirs(od, exist_ok=True)
+            Path(out_path_abs).write_bytes(raw)
+            return len(raw)
     finally:
         cap.release()
-    if not rows:
-        raise ValueError("视频中未读到帧")
-
-    hdr0 = rows[0][1]
-    if hdr0.Mode == 0:
-        raw = b"".join(_strip_and_verify_crc(w) for w, _ in rows)
-        out_path = os.path.abspath(out_path)
-        od = os.path.dirname(out_path)
-        if od:
-            os.makedirs(od, exist_ok=True)
-        Path(out_path).write_bytes(raw)
-        return len(raw)
-
-    mp4_dir = os.path.dirname(mp4_path)
-    manifest = Path(mp4_dir) / "original_size.txt"
-    if not manifest.is_file():
-        raise ValueError(
-            "RAID 视频解码需要与 mp4 同目录下的 original_size.txt（encode-file-to-mp4 已复制）"
-        )
-    orig_len = int(manifest.read_text(encoding="ascii").strip())
-    hdr_mode = hdr0.Mode
-    for _w, hdr in rows:
-        if hdr.Mode != hdr_mode:
-            raise ValueError("各帧 Mode 不一致")
-    kind, k_data = _header_mode_to_k_and_kind(hdr_mode)
-    n_disks = k_data + (1 if kind == "raid5" else 2)
-    if len(rows) % n_disks != 0:
-        raise ValueError(
-            f"总帧数 {len(rows)} 不能整除每 RAID 组盘数 {n_disks}"
-        )
-    out_chunks: list[bytes] = []
-    for g in range(0, len(rows), n_disks):
-        slot = rows[g : g + n_disks]
-        disks: list[list[bytes | None]] = [
-            [_wire_ljust_datasize(slot[d][0])] for d in range(n_disks)
-        ]
-        if kind == "raid5":
-            rec = Raid5Decode(disks)
-        else:
-            rec = Raid6Decode(disks)
-        for di in range(k_data):
-            blk = rec[di][0]
-            if blk is None:
-                raise ValueError(f"RAID 组 {g // n_disks} 数据盘 {di} 无法恢复")
-            _w, hdr_di = slot[di]
-            out_chunks.append(_user_from_recovered_raid_block(blk, hdr_di))
-    raw = b"".join(out_chunks)[:orig_len]
-    out_path = os.path.abspath(out_path)
-    od = os.path.dirname(out_path)
-    if od:
-        os.makedirs(od, exist_ok=True)
-    Path(out_path).write_bytes(raw)
-    return len(raw)
 
 
 def encode_file_to_mp4(
@@ -696,6 +732,52 @@ def decode_png_to_payload(
     return _strip_and_verify_crc(wire), hdr
 
 
+def decode_png_to_payload_first_matching(
+    image_path: str, strategies: tuple[str, ...]
+) -> Tuple[bytes, FrameHeader, str]:
+    """按序尝试 strategies，返回首个 CRC16 通过的策略名与用户负载。"""
+    last: BaseException | None = None
+    for m in strategies:
+        try:
+            payload, hdr = decode_png_to_payload(image_path, run_mode=m)
+            return payload, hdr, m
+        except ValueError as e:
+            last = e
+    raise ValueError(
+        f"下列采样策略均无法通过 CRC16: {', '.join(strategies)}"
+    ) from last
+
+
+def _decode_mp4_mode0_auto_strategies(fps: list[str], out_path: str) -> int:
+    parts: list[bytes] = []
+    hdr0: FrameHeader | None = None
+    for fi, fp in enumerate(fps):
+        try:
+            payload, hdr, _m = decode_png_to_payload_first_matching(
+                fp, _MP4_AUTO_STRATEGIES
+            )
+        except ValueError as e:
+            raise ValueError(f"第 {fi} 帧（0 起）auto 仍失败") from e
+        if hdr0 is None:
+            hdr0 = hdr
+        elif hdr.Mode != hdr0.Mode:
+            raise ValueError(f"第 {fi} 帧 Mode={hdr.Mode} 与首帧 Mode={hdr0.Mode} 不一致")
+        parts.append(payload)
+    if hdr0 is None:
+        raise ValueError("内部错误：无帧")
+    if hdr0.Mode != 0:
+        raise ValueError(
+            "run_mode=auto 仅支持 Mode=0（平铺）视频；RAID 请指定固定 --run-mode"
+        )
+    raw = b"".join(parts)
+    out_path = os.path.abspath(out_path)
+    od = os.path.dirname(out_path)
+    if od:
+        os.makedirs(od, exist_ok=True)
+    Path(out_path).write_bytes(raw)
+    return len(raw)
+
+
 def print_workflow_guide() -> None:
     """在终端打印端到端流程说明（与模块文档一致，便于复制命令）。"""
     print(
@@ -722,7 +804,7 @@ def print_workflow_guide() -> None:
 
 三、收端（从视频还原文件）
     python run.py from-mp4 -i <录屏或拷贝的.mp4> -o <还原文件>
-  默认 --run-mode test（非 1644 会先裁正再最近邻缩放到 1644，与 tribit/CRC 对齐）。
+  默认 --run-mode test；单帧失败可试 test_robust_inner（4:2:0 色度）或 ``--run-mode auto``（逐帧多策略）。
 
 四、自检
     python run.py roundtrip-mp4 --fps 2
@@ -758,12 +840,12 @@ def main() -> None:
     p_dec.add_argument(
         "--run-mode",
         default="test",
-        choices=("test", "normal"),
+        choices=_CRC_RUN_MODES,
         help="image_to_matrix 模式；本仓库生成的图通常用 test",
     )
 
     p_rt = sub.add_parser("roundtrip", help="内存往返自测（不写盘）")
-    p_rt.add_argument("--run-mode", default="test", choices=("test", "normal"))
+    p_rt.add_argument("--run-mode", default="test", choices=_CRC_RUN_MODES)
 
     p_ef = sub.add_parser("encode-file", help="整文件 -> 多帧 PNG 目录")
     p_ef.add_argument("--input", "-i", required=True, help="输入文件")
@@ -776,14 +858,14 @@ def main() -> None:
     p_df.add_argument(
         "--run-mode",
         default="test",
-        choices=("test", "normal"),
+        choices=_CRC_RUN_MODES,
     )
 
     p_rtf = sub.add_parser("roundtrip-file", help="多帧整文件往返自测（临时目录）")
     p_rtf.add_argument(
         "--run-mode",
         default="test",
-        choices=("test", "normal"),
+        choices=_CRC_RUN_MODES,
     )
 
     p_efr = sub.add_parser("encode-file-raid", help="整文件 -> RAID 分组多帧 PNG")
@@ -802,7 +884,7 @@ def main() -> None:
         default="level2_20",
         choices=("level1_10", "level2_20", "level3_40"),
     )
-    p_rtfr.add_argument("--run-mode", default="test", choices=("test", "normal"))
+    p_rtfr.add_argument("--run-mode", default="test", choices=_CRC_RUN_MODES)
 
     p_tm = sub.add_parser("to-mp4", help="PNG 目录 -> MP4（按文件名排序）")
     p_tm.add_argument("--input-dir", "-i", required=True)
@@ -824,7 +906,12 @@ def main() -> None:
     )
     p_fm.add_argument("--input", "-i", required=True)
     p_fm.add_argument("--output", "-o", required=True)
-    p_fm.add_argument("--run-mode", default="test", choices=("test", "normal"))
+    p_fm.add_argument(
+        "--run-mode",
+        default="test",
+        choices=("auto",) + _CRC_RUN_MODES,
+        help="auto：逐帧在 test / test_robust / inner / mean 间尝试直至 CRC 通过（仅平铺 Mode=0）",
+    )
 
     p_efm = sub.add_parser(
         "encode-file-to-mp4",
@@ -861,7 +948,11 @@ def main() -> None:
         choices=("level1_10", "level2_20", "level3_40"),
         default=None,
     )
-    p_rtm.add_argument("--run-mode", default="test", choices=("test", "normal"))
+    p_rtm.add_argument(
+        "--run-mode",
+        default="test",
+        choices=("auto",) + _CRC_RUN_MODES,
+    )
 
     args = parser.parse_args()
 

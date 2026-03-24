@@ -1,1 +1,2 @@
 //这是测试模块，如有测试脚本可在此存储
+//自测：run.py roundtrip / roundtrip-file / roundtrip-mp4；仅解码入口：仓库根 run_decode.py

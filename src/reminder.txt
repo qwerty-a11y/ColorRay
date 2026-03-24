@@ -15,3 +15,7 @@ config.json为全局配置文件,模板如下
 //common 内尚有 header.py、CorrectionLevel.py、File.py、RSmodule.py；Raid.py 的 RAID6 依赖 pyjerasure
 //sender 下现有 encoder（如 Encode.py）、generator（frame_gen、drawer、colors_to_matrix、bytes_to_colors）
 //receiver 下现有 detector（warp_engine.cpp、dll、test_dll 脚本）、decoder（image_to_matrix、matrix_to_colors、colors_to_bytes）、rgb_reader（rgb_detect）
+//frame_pipeline.py：帧头/CRC16/tribit、单帧与多帧、RAID、PNG↔MP4；run.py 多数子命令转发至此
+//MP4 解码：临时 PNG 须在 TemporaryDirectory 仍存在时读完；帧保存为 BGR→RGB 后 PIL 写盘
+//image_to_matrix：test / test_robust / test_robust_inner / test_robust_mean / normal；mp4 可用 auto 逐帧多策略（仅 Mode=0）
+//detector 另有 test_dll_mov.py、test_dll_photo.py 等；收端聚合见仓库根 run_decode.py 与 decode_pipeline.py
