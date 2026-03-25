@@ -1,6 +1,7 @@
 import os, sys
 
 from common.CorrectionLevel import RSLevel, RaidLevel
+from sender.generator.drawer import drawer
 
 # 添加项目根目录到 Python 模块搜索路径
 current_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +37,9 @@ def page_to_color(page: int) -> list[tuple[int, int, int]]:
     # 转换为 8 进制字符串，去掉 '0o' 前缀
     # 如果 page 为 0，oct(0) 结果为 '0o0'，切片后为 '0'
     oct_str = oct(page)[2:]
+    
+    # 【修改】强制四位对齐，高位缺位补 0
+    oct_str = oct_str.zfill(4)
     
     color_list:list[tuple[int, int, int]] = []
     for digit_char in oct_str:
@@ -199,19 +203,20 @@ def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> 
         set_cell(r, 16, (255, 255, 255))  # 右方边框（与左上共享）
 
     header = page_to_color(curpage)+page_to_color(allpage)+raid_rs_to_color(raid, rs)
+    print(header)
 
     # ===================== 6. 绘制特定位置的黑/蓝色块 =====================
-    # 左上定位块边框下方靠左：(17,2)开始，前4黑、后2蓝
+    # 左上定位块边框下方靠左：(17,2)开始
     for k in range(10):
         set_cell(17, 2 + k, header[k])
 
-    # 左下定位块边框上方靠左：(GRID_COUNT-18,2)开始，前4黑、后2蓝
-    for k in range(6):
+    # 左下定位块边框上方靠左：(GRID_COUNT-18,2)开始
+    for k in range(10):
         set_cell(GRID_COUNT - 18, 2 + k, header[k])
 
-    # 右上定位块边框下方靠右：(17, GRID_COUNT-8)开始，前4黑、后2蓝
+    # 右上定位块边框下方靠右：(17, GRID_COUNT-8)开始
     for k in range(10):
-        set_cell(17, GRID_COUNT - 8 + k, header[k])
+        set_cell(17, GRID_COUNT - 12 + k, header[k])
 
     # ===================== 7. 处理未定义区域（原None） =====================
     for r in range(GRID_COUNT):
@@ -222,4 +227,5 @@ def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> 
                 # 标记该位置需要边框
                 need_border_grid[r][c] = True
    
+    drawer(color_grid, need_border_grid, "debug"+str(curpage)+".png")
     return color_grid, need_border_grid

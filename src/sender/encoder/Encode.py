@@ -51,11 +51,6 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
             RSPercent = 0
             
     FileGroupSize = GroupDataSize - 2 - RSCorrectBytesPerGroup * 4
-    
-    # 若校验位部分为奇数，则使数据部分结果再减一
-    rs_part = (GroupDataSize - 2) * RSPercent / 100
-    if rs_part % 2 != 0:
-        FileGroupSize -= 1
 
     # 根据 RaidLevel 决定第一维的元素个数 (行数)
     row_count = 0
@@ -111,13 +106,19 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
             from common.CRC16 import add_crc16
             data_groups[row][col] = rs_encode_bytes(add_crc16(data_groups[row][col]), RSCorrectBytesPerGroup)
 
-    # 【修改新增】在所有真实数据完成校验和编码后，再填充随机数据
+    # 【修改新增】在所有真实数据完成校验和编码后，再填充随机数据并统一长度
     for row in range(row_count):
         for col in range(col_count):
             if data_groups[row][col] is None:
-                # 生成与正常数据块长度一致的随机数据
-                # 注意：这里直接生成原始长度的随机数，不加 CRC 和 RS，符合需求
-                data_groups[row][col] = os.urandom(GroupDataSize)
+                # 生成与 GroupDataSize 长度一致的随机数据，确保所有块长度相同
+                data_groups[row][col] = os.urandom(int(GroupDataSize))
+            else:
+                # 【新增】对于已有数据块，如果长度不满 GroupDataSize，进行补全
+                current_len = len(data_groups[row][col])
+                if current_len < int(GroupDataSize):
+                    # 使用 \x00 填充至标准长度
+                    padding_len = int(GroupDataSize) - current_len
+                    data_groups[row][col] = data_groups[row][col] + os.urandom(padding_len) 
 
     # 若 Raid 等级不为 NONE，调用对应的 Raid 编码函数
     match raid:
