@@ -137,3 +137,24 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
             pass
 
     return data_groups
+
+def GroupToFrames(group: List[List[bytes]]) -> List[bytes]:
+    frames = []
+    index = 0
+    finish = False
+    while True:
+        for row in group:
+            frame = b''
+            for i in range(8):
+                if i+index >= len(row):
+                    finish = True
+                    break
+                if row[i+index] is not None:
+                    frame += row[i+index]
+            if finish:
+                break
+            frames.append(frame)
+        if finish:
+            break
+        index+=8
+    return frames

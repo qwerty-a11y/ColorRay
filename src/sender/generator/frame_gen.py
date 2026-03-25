@@ -1,5 +1,7 @@
 import os, sys
 
+from common.CorrectionLevel import RSLevel, RaidLevel
+
 # 添加项目根目录到 Python 模块搜索路径
 current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_file_dir, "..", "..", ".."))
@@ -12,7 +14,67 @@ import src.common.Config as Config
 # 生成基础结构，后续建议根据基础结构做解码器
 # 修改自@kafuchino的代码，将其提取成函数
 
-def generate_frame() -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]]:
+# 8 种标准颜色 (RGB)
+COLORS = [
+    (0, 0, 0),    # 黑
+    (0, 0, 255),  # 蓝
+    (0, 255, 0),  # 绿
+    (0, 255, 255),# 青
+    (255, 0, 0),  # 红
+    (255, 0, 255),# 品红
+    (255, 255, 0),# 黄
+    (255, 255, 255)# 白
+]
+
+def page_to_color(page: int) -> list[tuple[int, int, int]]:
+    """
+    将整数 page 转为 8 进制，按位确定颜色
+    :param page: 输入整数
+    :return: 颜色元组列表，每个元素对应 8 进制的一位
+    """
+    
+    # 转换为 8 进制字符串，去掉 '0o' 前缀
+    # 如果 page 为 0，oct(0) 结果为 '0o0'，切片后为 '0'
+    oct_str = oct(page)[2:]
+    
+    color_list:list[tuple[int, int, int]] = []
+    for digit_char in oct_str:
+        digit = int(digit_char)
+        color_list.append(COLORS[digit])
+            
+    return color_list
+
+def raid_rs_to_color(raid: RaidLevel, rs: RSLevel) -> list[tuple[int, int, int]]:
+    """
+    生成基础结构颜色矩阵
+    :param raid: 奇偶校验等级
+    :param rs: RS等级
+    :return: 颜色矩阵
+    """
+    color_list: list[tuple[int, int, int]] = []
+    # 根据 RAID 等级添加对应颜色
+    match raid:
+        case RaidLevel.NONE:
+            color_list.append(COLORS[0])
+        case RaidLevel.LEVEL1_10:
+            color_list.append(COLORS[1])
+        case RaidLevel.LEVEL2_20:
+            color_list.append(COLORS[2])
+        case RaidLevel.LEVEL3_40:
+            color_list.append(COLORS[3])
+    # 根据 RS 等级添加对应颜色
+    match rs:
+        case RSLevel.NONE:
+            color_list.append(COLORS[0])
+        case RSLevel.LEVEL1_5:
+            color_list.append(COLORS[1])
+        case RSLevel.LEVEL2_10:
+            color_list.append(COLORS[2])
+        case RSLevel.LEVEL3_20:
+            color_list.append(COLORS[3])
+    return color_list
+
+def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]]:
     """
     生成137×137的固定结构颜色矩阵，以及标记需要边框的矩阵
     矩阵规则：
@@ -31,18 +93,6 @@ def generate_frame() -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]
     GRID_COUNT = Config.QRSize + 4  # 网格数量 = 1644/12 = 137
     IMG_SIZE = GRID_COUNT*CELL_PIXELS   # 图像总尺寸 1644x1644
     
-
-    # 8 种标准颜色 (RGB)
-    COLORS = [
-        (0, 0, 0),    # 黑
-        (0, 0, 255),  # 蓝
-        (0, 255, 0),  # 绿
-        (0, 255, 255),# 青
-        (255, 0, 0),  # 红
-        (255, 0, 255),# 品红
-        (255, 255, 0),# 黄
-        (255, 255, 255)# 白
-    ]
     BG_GRAY = (128, 128, 128)  # 边框灰色（原逻辑未实际使用，保留）
 
     # ===================== 初始化矩阵 =====================
@@ -148,21 +198,20 @@ def generate_frame() -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]
     for r in range(GRID_COUNT - 17, GRID_COUNT - 2):
         set_cell(r, 16, (255, 255, 255))  # 右方边框（与左上共享）
 
+    header = page_to_color(curpage)+page_to_color(allpage)+raid_rs_to_color(raid, rs)
+
     # ===================== 6. 绘制特定位置的黑/蓝色块 =====================
     # 左上定位块边框下方靠左：(17,2)开始，前4黑、后2蓝
-    for k in range(6):
-        color = (0, 0, 0) if k < 4 else (0, 0, 255)
-        set_cell(17, 2 + k, color)
+    for k in range(10):
+        set_cell(17, 2 + k, header[k])
 
     # 左下定位块边框上方靠左：(GRID_COUNT-18,2)开始，前4黑、后2蓝
     for k in range(6):
-        color = (0, 0, 0) if k < 4 else (0, 0, 255)
-        set_cell(GRID_COUNT - 18, 2 + k, color)
+        set_cell(GRID_COUNT - 18, 2 + k, header[k])
 
     # 右上定位块边框下方靠右：(17, GRID_COUNT-8)开始，前4黑、后2蓝
-    for k in range(6):
-        color = (0, 0, 0) if k < 4 else (0, 0, 255)
-        set_cell(17, GRID_COUNT - 8 + k, color)
+    for k in range(10):
+        set_cell(17, GRID_COUNT - 8 + k, header[k])
 
     # ===================== 7. 处理未定义区域（原None） =====================
     for r in range(GRID_COUNT):
