@@ -1,0 +1,9 @@
+Hello, this is a test file for the ColorRay encoding/decoding system.
+This file contains some sample data to verify the encode-decode pipeline works correctly.
+The file is small enough to be easily tested, but large enough to require multiple blocks.
+Lines of text to make the file larger...
+More content here to ensure we have enough data for proper testing.
+Test data for RAID and RS error correction.
+Additional lines to increase file size.
+Lorem ipsum dolor sit amet.
+This is the end of test data.
