@@ -1,5 +1,7 @@
 import math
 
+from common import Config
+
 # 注意解析时的基础结构矩阵、起始位置、步长必须与填充时完全一致，否则会导致解析失败（颜色数量不符或结构不匹配）
 
 # 复用原有异常类，新增矩阵结构不一致异常
@@ -22,7 +24,7 @@ class MatrixStructureMismatchError(ValueError):
 def matrix_to_colors(
     frame_matrix: list[list[tuple[int, int, int] | None]],  # 原始frame矩阵（基础结构+None）
     filled_matrix: list[list[tuple[int, int, int]]],        # 填充后的矩阵（基础结构+填充色）
-    patch_size: int = 16844,                                # 预期提取的颜色列表长度
+    patch_size: int = Config.FrameDataBlocks,                           # 预期提取的颜色列表长度
     start_pos: int = 0,                                     # 填充时的起始一维索引
     step: int = 68                                          # 填充时使用的互质步长
 ) -> list[tuple[int, int, int]]:

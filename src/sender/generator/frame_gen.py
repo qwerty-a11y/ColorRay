@@ -74,11 +74,11 @@ def raid_rs_to_color(raid: RaidLevel, rs: RSLevel) -> list[tuple[int, int, int]]
             color_list.append(COLORS[1])
         case RSLevel.LEVEL2_10:
             color_list.append(COLORS[2])
-        case RSLevel.LEVEL3_20:
+        case RSLevel.LEVEL3_15:
             color_list.append(COLORS[3])
     return color_list
 
-def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> tuple[list[list[tuple[int, int, int]]], list[list[bool]]]:
+def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> tuple[list[list[tuple[int, int, int]|None]], list[list[bool]]]:
     """
     生成137×137的固定结构颜色矩阵，以及标记需要边框的矩阵
     矩阵规则：
@@ -216,7 +216,7 @@ def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> 
 
     # 右上定位块边框下方靠右：(17, GRID_COUNT-8)开始
     for k in range(10):
-        set_cell(17, GRID_COUNT - 12 + k, header[k])
+        set_cell(17, GRID_COUNT - 3 - k, header[k])
 
     # ===================== 7. 处理未定义区域（原None） =====================
     for r in range(GRID_COUNT):

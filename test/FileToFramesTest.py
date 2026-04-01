@@ -62,7 +62,7 @@ if __name__ == "__main__":
             case 2:
                 rs_level = RSLevel.LEVEL2_10
             case 3:
-                rs_level = RSLevel.LEVEL3_20
+                rs_level = RSLevel.LEVEL3_15
     except IndexError:
         print(f"Error: Invalid level index. Raid: {raid_val}, RS: {rs_val}")
         sys.exit(1)
