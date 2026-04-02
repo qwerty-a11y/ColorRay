@@ -49,7 +49,7 @@ def process_photo(img_path, out_size=800):
     """
     img = cv2.imread(img_path)
     if img is None:
-        print(f"错误: 无法读取图像 {img_path}")
+        print(f"错误：无法读取图像 {img_path}")
         return None
     img_bgr = np.ascontiguousarray(img)
     h, w, c = img_bgr.shape
@@ -57,4 +57,15 @@ def process_photo(img_path, out_size=800):
     in_ptr = img_bgr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
     out_ptr = out_img.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
     success = warp_engine.ExtractQRCode(in_ptr, w, h, c, out_ptr, out_size, out_size) # type: ignore
+    
+    # [新增] 自动保存图片以便调试
+    if success:
+        base_name = os.path.splitext(os.path.basename(img_path))[0]
+        save_dir = os.path.dirname(img_path) or "."
+        
+        # 保存校正后的图片
+        warped_save_path = os.path.join(save_dir, f"{base_name}_warped.png")
+        cv2.imwrite(warped_save_path, out_img)
+        print(f">>> 已保存校正图片至：{warped_save_path}")
+
     return out_img if success else None

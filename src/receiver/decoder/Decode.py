@@ -11,224 +11,10 @@ from receiver.decoder.image_to_matrix import array_to_matrix, image_to_matrix
 from receiver.decoder.matrix_to_colors import matrix_to_colors
 from common.RSmodule import rs_decode_bytes
 from receiver.detector.img_extract import process_photo
+from sender.encoder.Encode import FramesToGroup
 from sender.generator.frame_gen import COLORS, generate_frame
 
-'''
-def Decode(data_groups: List[List[bytes]], raid: RaidLevel, rs: RSLevel, 
-           output_dir: str = None) -> tuple[str, bytes]:
-    """
-    完整的文件解码流程（Encode 函数的反向操作）
-    
-    处理流程：
-    1. RAID 解码 → 恢复原始数据块
-    2. RS 解码每个块 → 恢复数据和 CRC
-    3. CRC16 验证 → 区分真实块和填充块
-    4. 合并真实块 → 恢复原始数据流
-    5. 解析文件头 → 提取文件名和大小
-    6. 生成文件 → 保存到指定路径
-    
-    :param data_groups: RAID 编码后的二维数据组 [行数][列数]
-    :param raid: RAID 等级
-    :param rs: RS 纠错等级
-    :param output_dir: 输出目录（默认为 ./data）
-    :return: (文件名, 文件内容) 元组
-    :raises ValueError: 数据损坏或无法恢复
-    """
-    import os
-    
-    # 设置默认输出目录
-    if output_dir is None:
-        output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
-    
-    # 确保输出目录存在
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 1. 获取 RS 参数
-    rs_correct_bytes = _get_rs_correct_bytes(rs)
-    
-    # 2. RAID 解码
-    print(f"[1/6] 执行 RAID 解码 ({raid.name})...")
-    data_groups_decoded = _perform_raid_decode(data_groups, raid)
-    
-    # 3. 从二维数组提取块序列
-    print(f"[2/6] 提取数据块...")
-    all_blocks = _extract_blocks_from_2d(data_groups_decoded)
-    print(f"  共 {len(all_blocks)} 个块")
-    
-    # 4. RS 解码 + CRC 验证
-    print(f"[3/6] RS 解码和 CRC 验证...")
-    decoded_blocks, block_validity = _decode_and_verify_blocks(all_blocks, rs_correct_bytes)
-    valid_count = sum(1 for v in block_validity if v)
-    print(f"  有效块: {valid_count}/{len(all_blocks)}")
-    
-    # 5. 从真实块恢复原始数据
-    print(f"[4/6] 合并数据块...")
-    reconstructed_data = _reconstruct_data_from_blocks(decoded_blocks, block_validity)
-    print(f"  恢复数据大小: {len(reconstructed_data)} 字节")
-    
-    # 6. 解析文件头
-    print(f"[5/6] 解析文件头...")
-    file_name, original_size, file_data = _extract_file_from_data(reconstructed_data)
-    print(f"  文件名: {file_name}")
-    print(f"  原始大小: {original_size} 字节")
-    
-    # 7. 保存文件
-    print(f"[6/6] 保存文件...")
-    output_path = os.path.join(output_dir, file_name)
-    with open(output_path, 'wb') as f:
-        f.write(file_data)
-    print(f"  已保存: {output_path}")
-    
-    return file_name, file_data
-
-
-# ============================================================================
-# 辅助函数
-# ============================================================================
-
-def _get_rs_correct_bytes(rs: RSLevel) -> int:
-    """获取 RS 纠错字节数"""
-    match rs:
-        case RSLevel.LEVEL1_5:
-            return 10
-        case RSLevel.LEVEL2_10:
-            return 20
-        case RSLevel.LEVEL3_15:
-            return 40
-        case RSLevel.NONE:
-            return 0
-        case _:
-            raise ValueError(f"未知的 RS 等级: {rs}")
-
-
-def _perform_raid_decode(data_groups: List[List[bytes]], raid: RaidLevel) -> List[List[bytes | None]]:
-    """执行 RAID 解码"""
-    match raid:
-        case RaidLevel.LEVEL1_10 | RaidLevel.LEVEL2_20:
-            return Raid5Decode(data_groups)
-        case RaidLevel.LEVEL3_40:
-            return Raid6Decode(data_groups)
-        case RaidLevel.NONE:
-            return data_groups
-        case _:
-            raise ValueError(f"未知的 RAID 等级: {raid}")
-
-
-def _extract_blocks_from_2d(data_groups: List[List[bytes | None]]) -> List[bytes]:
-    """从 2D 数组按列优先顺序提取块序列"""
-    blocks = []
-    
-    if not data_groups:
-        return blocks
-    
-    rows = len(data_groups)
-    cols = len(data_groups[0]) if rows > 0 else 0
-    
-    # 按列优先顺序遍历
-    for col in range(cols):
-        for row in range(rows):
-            if data_groups[row][col] is not None:
-                blocks.append(data_groups[row][col])
-    
-    return blocks
-
-
-def _decode_and_verify_blocks(blocks: List[bytes], 
-                               rs_correct_bytes: int) -> tuple[List[bytes], List[bool]]:
-    """RS 解码和 CRC16 验证（区分真实块和填充块）"""
-    decoded_blocks = []
-    block_validity = []
-    
-    for i, block in enumerate(blocks):
-        try:
-            # 检查块大小
-            if len(block) != GroupDataSize:
-                print(f"  警告: 块 {i} 大小异常 ({len(block)} != {GroupDataSize})")
-                decoded_blocks.append(b'')
-                block_validity.append(False)
-                continue
-            
-            # 【修改】如果是 LEVEL3_20（rs_correct_bytes=40），只截取前 749 字节
-            # 因为后 40 字节被随机填充了（789 - 40 = 749）
-            block_to_decode = block
-            if rs_correct_bytes == 40:
-                block_to_decode = block[:749]
-            
-            # RS 解码
-            decoded = rs_decode_bytes(block_to_decode, rs_correct_bytes)
-            
-            # CRC16 验证
-            if verify_crc16(decoded):
-                # CRC 通过：真实数据块
-                actual_data = decoded[2:]  # 去掉前 2 字节的 CRC
-                decoded_blocks.append(actual_data)
-                block_validity.append(True)
-            else:
-                # CRC 失败：填充块
-                decoded_blocks.append(b'')
-                block_validity.append(False)
-                
-        except Exception as e:
-            print(f"  警告: 块 {i} 解码失败 - {str(e)}")
-            decoded_blocks.append(b'')
-            block_validity.append(False)
-    
-    return decoded_blocks, block_validity
-
-
-def _reconstruct_data_from_blocks(decoded_blocks: List[bytes],
-                                   block_validity: List[bool]) -> bytes:
-    """从真实块重建原始数据流"""
-    reconstructed = b''
-    
-    for block_data, is_valid in zip(decoded_blocks, block_validity):
-        if is_valid:
-            reconstructed += block_data
-    
-    return reconstructed
-
-
-def _extract_file_from_data(data: bytes) -> tuple[str, int, bytes]:
-    """
-    从数据中提取文件头（264字节）并恢复原始文件
-    
-    文件头格式：
-    - 字节 0-1: 文件名长度（2 字节大端序）
-    - 字节 2-255: 文件名（254 字节，不足补 0）
-    - 字节 256-263: 文件大小（8 字节大端序）
-    - 字节 264+: 文件实际内容
-    """
-    HEADER_SIZE = 264
-    FILE_NAME_MAX_LEN = 254
-    
-    if len(data) < HEADER_SIZE:
-        raise ValueError(f"数据不足以解析文件头 (期望 {HEADER_SIZE}, 实际 {len(data)})")
-    
-    header = data[:HEADER_SIZE]
-    file_content = data[HEADER_SIZE:]
-    
-    # 解析文件名长度
-    name_len = int.from_bytes(header[0:2], byteorder='big')
-    if name_len > FILE_NAME_MAX_LEN:
-        raise ValueError(f"文件名长度无效: {name_len}")
-    
-    # 解析文件名
-    padded_name = header[2:2+FILE_NAME_MAX_LEN]
-    file_name = padded_name[:name_len].decode('utf-8', errors='ignore')
-    
-    # 解析原始文件大小
-    original_size = int.from_bytes(header[256:264], byteorder='big')
-    
-    # 根据原始大小裁剪文件内容
-    if len(file_content) >= original_size:
-        file_content = file_content[:original_size]
-    else:
-        print(f"  警告: 文件内容不足 (期望 {original_size}, 实际 {len(file_content)})")
-    
-    return file_name, original_size, file_content
-
-'''
-def GetCorrectionPagesInfo(frame:str) -> tuple[int, RaidLevel, RSLevel]:
+def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int, RaidLevel, RSLevel]:
     """
     从图片帧中读取三处元信息（左上、左下、右上），进行多数表决。
     若有两处及以上相同以此为准，否则抛出异常。
@@ -238,11 +24,6 @@ def GetCorrectionPagesInfo(frame:str) -> tuple[int, RaidLevel, RSLevel]:
     :return: (allpage, raid, rs)
     :raises ValueError: 当三处元信息无法达成多数一致时
     """
-    array = process_photo(frame)
-    if array is None:
-        raise ValueError("无法处理图片帧，未提取到有效数据")
-    
-    matrix = array_to_matrix(array)
     # 获取网格尺寸配置 (与 frame_gen 一致)
     GRID_COUNT = Config.QRSize
     
@@ -262,13 +43,14 @@ def GetCorrectionPagesInfo(frame:str) -> tuple[int, RaidLevel, RSLevel]:
             c = start_c + k
             if 0 <= start_r < GRID_COUNT and 0 <= c < GRID_COUNT:
                 color_val = matrix[start_r][c]
-                # 将 RGB 元组映射回 0-7 的索引
+                
+                # 将 RGB 元组映射回 0-7 的索引 (此时 color_val 已是 RGB 格式)
                 try:
                     idx = COLORS.index(color_val)
-                    colors.append(idx)
                 except ValueError:
                     # 如果颜色不匹配标准色，抛出错误或返回无效标记
                     raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val}")
+                colors.append(idx)
             else:
                 raise ValueError(f"坐标越界：({start_r}, {c})")
         
@@ -280,7 +62,6 @@ def GetCorrectionPagesInfo(frame:str) -> tuple[int, RaidLevel, RSLevel]:
         # 解析总页数 (原中 4 位，现索引 4-7)
         allpage_str = "".join(str(d) for d in colors[4:8])
         allpage = int(allpage_str, 8)
-        
         # 解析 RAID 等级 (第 9 位，索引 8)
         raid_map = {
             0: RaidLevel.NONE,
@@ -303,7 +84,7 @@ def GetCorrectionPagesInfo(frame:str) -> tuple[int, RaidLevel, RSLevel]:
         if rs is None:
             raise ValueError(f"无效的 RS 等级颜色索引：{colors[9]}")
             
-        print(colors)
+        
         # 【修改】返回不包含页码的元组
         return allpage, raid, rs
 
@@ -316,7 +97,6 @@ def GetCorrectionPagesInfo(frame:str) -> tuple[int, RaidLevel, RSLevel]:
     # frame_gen 中写入逻辑为：for k in range(10): set_cell(17, GRID_COUNT - 3 - k, header[k])
     # 即物理位置上从左到右读取到的颜色，对应逻辑 header 的顺序是反的
     pos3 = (15, GRID_COUNT - 10)
-    
     results = []
     errors = []
     
@@ -369,19 +149,13 @@ def GetCorrectionPagesInfo(frame:str) -> tuple[int, RaidLevel, RSLevel]:
     # final_result 现在是 (allpage, raid, rs)
     return final_result
 
-def GetCurrentPage(frame: str) -> int:
+def GetCurrentPage(matrix: list[list[tuple[int,int,int]]]) -> int:
     """
     从图片帧中提取当前页码
     :param frame: 图片帧路径
     :return: 当前页码
     :raises ValueError: 当无法读取页码或三处页码不一致时抛出异常
     """
-
-    array = process_photo(frame)
-    if array is None:
-        raise ValueError("无法处理图片帧，未提取到有效数据")
-    
-    matrix = array_to_matrix(array)
     # 获取网格尺寸配置 (与 frame_gen 一致)
     GRID_COUNT = Config.QRSize
     # 读取三个角落的的前 4 个颜色块解析当前页码
@@ -391,15 +165,16 @@ def GetCurrentPage(frame: str) -> int:
             c = start_c + k
             if 0 <= start_r < GRID_COUNT and 0 <= c < GRID_COUNT:
                 color_val = matrix[start_r][c]
-                # 将 RGB 元组映射回 0-7 的索引
+                
+                # 将 RGB 元组映射回 0-7 的索引 (此时 color_val 已是 RGB 格式)
                 try:
                     idx = COLORS.index(color_val)
-                    colors.append(idx)
                 except ValueError:
                     # 如果颜色不匹配标准色，抛出错误或返回无效标记
-                    raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val}")
-                else:
-                    raise ValueError(f"坐标越界：({start_r}, {c})")
+                    raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val} (RGB: {color_val})")
+                colors.append(idx)
+            else:
+                raise ValueError(f"坐标越界：({start_r}, {c})")
         page_str = "".join(str(d) for d in colors)
         return int(page_str, 8)
     # 定义三个读取位置的起始坐标 (参考 frame_gen 中的绘制逻辑)
@@ -442,118 +217,147 @@ def calculate_encoded_size(file_size: int, rs: RSLevel) -> int:
         
     返回:
         int: 编码后的理论总数据大小。
-        
-    注意:
-        此处为框架占位，具体计算逻辑需结合分块策略（Config.FrameGroupCount）
-        和填充规则后续完善。
     """
+    RSCorrectBytesPerGroup = 0
     RSBlocks = 0
     match rs:
         case RSLevel.LEVEL1_5:
-            RSCorrectBytesPerGroup = 10
-            #向下取整
-            RSBlocks = file_size // (Config.GroupDataSize - 2 - RSCorrectBytesPerGroup * 4)
-            RSBlocks += math.ceil((file_size - RSBlocks * Config.GroupDataSize) / 245)
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL1_5.r
+            RSBlocks = Config.RSCorrectionBytes.LEVEL1_5.b
         case RSLevel.LEVEL2_10:
-            RSCorrectBytesPerGroup = 20
-            RSBlocks = file_size // (Config.GroupDataSize - 2 - RSCorrectBytesPerGroup * 4)
-            RSBlocks += math.ceil((file_size - RSBlocks * Config.GroupDataSize) / 235)
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL2_10.r
+            RSBlocks = Config.RSCorrectionBytes.LEVEL2_10.b
         case RSLevel.LEVEL3_15:
-            RSCorrectBytesPerGroup = 40
-            RSBlocks = file_size // (Config.GroupDataSize - 2 - RSCorrectBytesPerGroup * 3)
-            RSBlocks += math.ceil((file_size - RSBlocks * Config.GroupDataSize) / 215)
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL3_15.r
+            RSBlocks = Config.RSCorrectionBytes.LEVEL3_15.b
         case RSLevel.NONE:
             RSCorrectBytesPerGroup = 0
     return file_size + RSBlocks * RSCorrectBytesPerGroup
 
-def DecodeFull(pages: int, path:str, raid:RaidLevel, rs:RSLevel):
+def DecodeFull(pages: int, path: str, raid: RaidLevel, rs: RSLevel):
+    RSCorrectBytesPerGroup = 0
+    match rs:
+        case RSLevel.LEVEL1_5:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL1_5.r
+        case RSLevel.LEVEL2_10:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL2_10.r
+        case RSLevel.LEVEL3_15:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL3_15.r
+        case RSLevel.NONE:
+            RSCorrectBytesPerGroup = 0
     print(f"开始解码: pages={pages}, path='{path}', raid={raid}, rs={rs}")
-    full_data_groups:list[list[bytes]] = []
+
+    # 初始化 full_data_groups（锯齿状，用于存储每页的8个数据块）
+    full_data_groups: list[list[bytes]] = []
     match raid:
         case RaidLevel.NONE:
-            full_data_groups = [[]]
+            full_data_groups = [[None for _ in range(pages * 8)]]  # type: ignore
         case RaidLevel.LEVEL1_10:
-            full_data_groups = [[] for _ in range(10)]
+            full_data_groups = [[None for _ in range((pages * 8 + 9 - i) // 10)] for i in range(10)]  # type: ignore
         case RaidLevel.LEVEL2_20, RaidLevel.LEVEL3_40:
-            full_data_groups = [[] for _ in range(5)]
-    raid_disk = 0
+            full_data_groups = [[None for _ in range((pages * 8 + 4 - i) // 5)] for i in range(5)]  # type: ignore
+
     img_index = -1
-    for k in range(pages):
-        raid_disk = (raid_disk + 1) % len(full_data_groups)
-        while (True):
-            img_index += 1
-            img_path = os.path.join(path, str(k) + ".png")
-            array = process_photo(img_path)
-            if array is None:
-                print(f"警告: 无法处理图片 {img_path}，跳过该页")
-                continue
-        
+    debug_decode_dir = "debug_decoded_raw_chunks"
+    os.makedirs(debug_decode_dir, exist_ok=True)
+
+    while True:
+        img_index += 1
+        img_path = os.path.join(path, str(img_index) + ".png")
+        if not os.path.exists(img_path):
+            print(f"未找到图片 {img_path}，结束读取")
+            break
+        array = process_photo(img_path)
+        if array is None:
+            print(f"警告: 无法处理图片 {img_path}，跳过该页")
+            continue
+
         matrix = array_to_matrix(array)
-        frame, _ = generate_frame(k, pages, raid, rs)
+        curpage = GetCurrentPage(matrix)
+        raid_disk = (curpage + 1) % len(full_data_groups)
+        frame, _ = generate_frame(curpage, pages, raid, rs)
         colors = matrix_to_colors(frame, matrix)
         data_bytes = colors_to_bytes(colors)
-        print(f"第 {k} 页颜色数据转换为字节完成，长度 {len(data_bytes)} 字节")
-        #将data_bytes均分为8组
+        print(f"第 {img_index} 帧颜色数据转换为字节完成，页码 {curpage}，长度 {len(data_bytes)} 字节")
+
         group_size = len(data_bytes) // Config.FrameGroupCount
         for i in range(Config.FrameGroupCount):
             start = i * group_size
             end = (i + 1) * group_size if i < Config.FrameGroupCount - 1 else len(data_bytes)
-            full_data_groups[raid_disk].append(data_bytes[start:end])
-    # Raid解码
+            chunk = data_bytes[start:end]
+
+            # 保存调试文件：格式 chunk_row{raid_disk}_col{curpage*8+i}.bin
+            col_index = curpage * 8 + i
+            debug_filename = f"chunk_{raid_disk}_{col_index}.bin"
+            debug_path = os.path.join(debug_decode_dir, debug_filename)
+            with open(debug_path, 'wb') as f:
+                f.write(chunk)
+
+            # RS 解码
+            decoded_data = rs_decode_bytes(chunk, RSCorrectBytesPerGroup)
+            if decoded_data == b'':
+                decoded_data = None
+            # 只有当前位置为空时才填入（保留首次成功解码的数据）
+            if full_data_groups[raid_disk][i] is None:
+                full_data_groups[raid_disk][i] = decoded_data
+
+    # RAID 解码
     match raid:
         case RaidLevel.NONE:
             pass
         case RaidLevel.LEVEL1_10:
-            full_data_groups = Raid5Decode(full_data_groups) # type: ignore
+            full_data_groups = Raid5Decode(full_data_groups)
         case RaidLevel.LEVEL2_20:
-            full_data_groups = Raid5Decode(full_data_groups) # type: ignore
+            full_data_groups = Raid5Decode(full_data_groups)
         case RaidLevel.LEVEL3_40:
-            full_data_groups = Raid6Decode(full_data_groups) # type: ignore
-    # RS解码
-    RSCorrectBytesPerGroup = 0
-    match rs:
-        case RSLevel.NONE:
-            pass
-        case RSLevel.LEVEL1_5:
-            RSCorrectBytesPerGroup = 10
-        case RSLevel.LEVEL2_10:
-            RSCorrectBytesPerGroup = 20
-        case RSLevel.LEVEL3_15:
-            RSCorrectBytesPerGroup = 40
-    final_data:list[bytes] = []
-    # 先解码第一个数据块，获取元数据后对多余填充进行截断，再对剩余数据块进行解码
-    print(full_data_groups)
-    first_group_decoded = rs_decode_bytes(full_data_groups[0][0], RSCorrectBytesPerGroup) # type: ignore
-    file_name_size = int.from_bytes(first_group_decoded[:4], byteorder='big')
-    file_name = first_group_decoded[4:4+file_name_size].decode('utf-8')
-    file_size = int.from_bytes(first_group_decoded[4+file_name_size:4+file_name_size+8], byteorder='big')
-    encoded_size = calculate_encoded_size(file_size, rs)
-    
-    # 截断多余填充：按顺序以 [0][0],[1][0],[2][0]...[0][1],[1][1]... 顺序保留数据块
-    current_length = 0
-    
-    # 获取最大块数，防止索引越界
-    max_blocks = max(len(group) for group in full_data_groups) if full_data_groups else 0
-    
-    # 外层循环遍历块索引 (第 0 块，第 1 块...)
-    for block_idx in range(max_blocks):
-        if current_length >= encoded_size:
-            break
-        # 内层循环遍历组索引 (第 0 组，第 1 组...)
-        for group_idx in range(len(full_data_groups)):
-            if current_length >= encoded_size:
-                break
-            if block_idx < len(full_data_groups[group_idx]):
-                chunk = full_data_groups[group_idx][block_idx]
-                needed = encoded_size - current_length
-                if len(chunk) <= needed:
-                    final_data.append(chunk)
-                    current_length += len(chunk)
-                else:
-                    final_data.append(chunk[:needed])
-    if RSCorrectBytesPerGroup:
-        for bytesblock in final_data:
-            rs_decode_bytes(bytesblock, RSCorrectBytesPerGroup)
-    with open(path, 'wb') as f:
-        f.write(b''.join([bytesblock if bytesblock is not None else b'\x00'*Config.GroupDataSize for bytesblock in final_data ]))
+            full_data_groups = Raid6Decode(full_data_groups)
 
+    # 此时 full_data_groups 是原始数据矩阵（行数 = 数据盘数，列数可能不等，但编码时所有行等长）
+    # 按列优先顺序提取所有数据块（与编码填充顺序一致）
+    # 首先确定最大列数
+    max_cols = max(len(row) for row in full_data_groups) if full_data_groups else 0
+    raw_data = b''
+    for col in range(max_cols):
+        for row in range(len(full_data_groups)):
+            if col < len(full_data_groups[row]):
+                chunk = full_data_groups[row][col]
+                if chunk is None:
+                    chunk = b'\x00' * Config.GroupDataSize
+            else:
+                chunk = b'\x00' * Config.GroupDataSize
+            raw_data += chunk
+
+    # 解析文件头
+    HEADER_LEN = 2 + 254 + 8
+    if len(raw_data) < HEADER_LEN:
+        raise ValueError("数据过短，无法解析文件头")
+    name_len = int.from_bytes(raw_data[:2], 'big')
+    if name_len > 254:
+        name_len = 254
+    file_name_bytes = raw_data[2:2+name_len]
+    try:
+        file_name = file_name_bytes.decode('utf-8', errors='ignore')
+    except Exception:
+        file_name = "decoded_file"
+    if not file_name:
+        file_name = "decoded_file"
+    file_size = int.from_bytes(raw_data[256:256+8], 'big')
+    if file_size < 0 or file_size > 10 * 1024 * 1024 * 1024:
+        print(f"警告：文件大小异常 ({file_size})，设为0")
+        file_size = 0
+
+    # 提取有效内容
+    file_content = raw_data[HEADER_LEN:HEADER_LEN + file_size]
+    if len(file_content) < file_size:
+        print(f"警告：有效数据不足，实际 {len(file_content)} 字节，预期 {file_size}")
+
+    # 写入文件
+    final_name = file_name
+    counter = 1
+    while os.path.exists(final_name):
+        base, ext = os.path.splitext(file_name)
+        final_name = f"{base}({counter}){ext}"
+        counter += 1
+    with open(final_name, 'wb') as f:
+        f.write(file_content)
+    print(f"解码完成，输出文件：{final_name}")

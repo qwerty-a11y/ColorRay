@@ -1,5 +1,7 @@
 import sys
 import os
+
+
 # 获取当前脚本所在目录 (test)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # 获取项目根目录 (ColorRay)
@@ -12,6 +14,8 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 from receiver.decoder.Decode import DecodeFull,GetCorrectionPagesInfo
+from receiver.decoder.image_to_matrix import array_to_matrix
+from receiver.detector.img_extract import process_photo
 def Decode(frames: str):
     """
     从帧序列中解码出文件并保存到磁盘
@@ -21,12 +25,21 @@ def Decode(frames: str):
     total_pages, raid, rs = None, None, None
     first_frame_path = os.path.join(frames, "0.png")
     try:
-        total_pages, raid, rs = GetCorrectionPagesInfo(first_frame_path)
+        img_array = process_photo(first_frame_path)
+        if img_array is None:
+            raise ValueError(f"无法处理第一帧图片 {first_frame_path}")
+        matrix = array_to_matrix(img_array)
+        total_pages, raid, rs = GetCorrectionPagesInfo(matrix)
     except Exception as e:
+        print(e.args)
         second_frame_path = os.path.join(frames, "1.png")
         if os.path.exists(second_frame_path):
             try:
-                total_pages, raid, rs = GetCorrectionPagesInfo(second_frame_path)
+                img_array = process_photo(second_frame_path)
+                if img_array is None:
+                    raise ValueError(f"无法处理第二帧图片 {second_frame_path}")
+                matrix = array_to_matrix(img_array)
+                total_pages, raid, rs = GetCorrectionPagesInfo(matrix)
             except Exception as e:
                 print(f"Error: 无法从前两帧获取总页数和纠错级别。请检查帧文件是否正确。")
                 sys.exit(1)

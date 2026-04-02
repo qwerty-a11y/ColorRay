@@ -22,55 +22,71 @@ class MatrixStructureMismatchError(ValueError):
     pass
 
 def matrix_to_colors(
-    frame_matrix: list[list[tuple[int, int, int] | None]],  # 原始frame矩阵（基础结构+None）
-    filled_matrix: list[list[tuple[int, int, int]]],        # 填充后的矩阵（基础结构+填充色）
+    frame_matrix: list[list[tuple[int, int, int] | None]],  # 原始 frame 矩阵（基础结构 +None）
+    filled_matrix: list[list[tuple[int, int, int]]],        # 填充后的矩阵（基础结构 + 填充色）
     patch_size: int = Config.FrameDataBlocks,                           # 预期提取的颜色列表长度
     start_pos: int = 0,                                     # 填充时的起始一维索引
     step: int = 68                                          # 填充时使用的互质步长
 ) -> list[tuple[int, int, int]]:
     """
-    对比原始frame矩阵和填充后的矩阵，按互质步长反向解析出原始颜色列表（仅包含填充色，排除基础结构）
-    :param frame_matrix: 137×137的原始frame矩阵（基础结构为RGB元组，可填充位为None）
-    :param filled_matrix: 137×137的填充后矩阵（基础结构不变，可填充位为填充色）
-    :param patch_size: 预期提取的颜色列表长度（固定16844）
-    :param start_pos: 填充时的起始一维索引（需与fill_matrix的start_pos一致）
-    :param step: 填充时使用的互质步长（需与fill_matrix的step一致）
-    :return: 还原后的原始颜色列表（仅包含填充的16844个颜色，无基础结构色）
+    对比原始 frame 矩阵和填充后的矩阵，按互质步长反向解析出原始颜色列表（仅包含填充色，排除基础结构）
+    :param frame_matrix: 137×137 的原始 frame 矩阵（基础结构为 RGB 元组，可填充位为 None）
+    :param filled_matrix: 137×137 的填充后矩阵（基础结构不变，可填充位为填充色）
+    :param patch_size: 预期提取的颜色列表长度（固定 16844）
+    :param start_pos: 填充时的起始一维索引（需与 fill_matrix 的 start_pos 一致）
+    :param step: 填充时使用的互质步长（需与 fill_matrix 的 step 一致）
+    :return: 还原后的原始颜色列表（仅包含填充的 16844 个颜色，无基础结构色）
     :raises TypeError: 输入类型非法
     :raises ValueError: 矩阵尺寸错误、步长不互质等
-    :raises MatrixStructureMismatchError: frame矩阵与填充矩阵的基础结构不一致
-    :raises ParseColorCountError: 解析出的颜色数量与patch_size不符
+    :raises MatrixStructureMismatchError: frame 矩阵与填充矩阵的基础结构不一致
+    :raises ParseColorCountError: 解析出的颜色数量与 patch_size 不符
     """
-    N = 137  # 矩阵固定边长
-    patch_size = 16844  # 固定提取长度
-    total_pos = N * N   # 矩阵总位置数
+    N = Config.QRSize  # 矩阵固定边长
+    patch_size = Config.FrameDataBlocks  # 固定提取长度
+    
+
+    # ===================== 【新增】边缘补白逻辑：将 133x133 扩展为 137x137 =====================
+    border_width = 2
+    expected_inner_size = N
+    expected_outer_size = N + 2 * border_width  # 137
+    total_pos = expected_outer_size * expected_outer_size
+    # 检查是否需要补白 (输入为 133x133 时)
+    if len(filled_matrix) == expected_inner_size:
+        white_pixel = (255, 255, 255)
+        
+        # 构建新的 137x137 filled_matrix (外围白色，内部原数据)
+        new_filled_matrix = [[white_pixel for _ in range(expected_outer_size)] for _ in range(expected_outer_size)]
+        for i in range(expected_inner_size):
+            for j in range(expected_inner_size):
+                new_filled_matrix[border_width + i][border_width + j] = filled_matrix[i][j]
+        filled_matrix = new_filled_matrix
 
     # ===================== 1. 输入合法性校验 =====================
     # 校验两个矩阵的尺寸是否为137×137
     for mat_name, matrix in {"frame_matrix": frame_matrix, "filled_matrix": filled_matrix}.items():
-        if len(matrix) != N or any(len(row) != N for row in matrix):
+        if len(matrix) != expected_outer_size or any(len(row) != expected_outer_size for row in matrix):
             raise ValueError(
-                f"{mat_name}必须是{N}×{N}的列表套列表，当前行数={len(matrix)}，"
+                f"{mat_name}必须是{expected_outer_size}×{expected_outer_size}的列表套列表，当前行数={len(matrix)}，"
                 f"列数={[len(row) for row in matrix][0] if matrix else 0}"
             )
     
     # 校验frame_matrix元素类型（只能是None或RGB元组）
-    for i in range(N):
-        for j in range(N):
+    for i in range(expected_outer_size):
+        for j in range(expected_outer_size):
             val = frame_matrix[i][j]
             if val is not None and (not isinstance(val, tuple) or len(val) != 3 or any(not isinstance(c, int) or c < 0 or c > 255 for c in val)):
                 raise TypeError(f"frame_matrix[{i}][{j}]元素非法，只能是None或RGB元组，当前为{val}")
     
     # 校验filled_matrix元素类型（只能是RGB元组，无None）
-    for i in range(N):
-        for j in range(N):
+    for i in range(expected_outer_size):
+        for j in range(expected_outer_size):
             val = filled_matrix[i][j]
             if not isinstance(val, tuple) or len(val) != 3 or any(not isinstance(c, int) or c < 0 or c > 255 for c in val):
                 raise TypeError(f"filled_matrix[{i}][{j}]元素非法，必须是RGB元组，当前为{val}")
 
     # 校验步长与N互质
-    if math.gcd(step, N) != 1:
-        raise ValueError(f"步长{step}与矩阵边长{N}不互质，请使用与{N}互质的步长（如68）")
+    if math.gcd(step, expected_outer_size) != 1:
+        raise ValueError(f"步长{step}与矩阵边长{expected_outer_size}不互质，请使用与{expected_outer_size}互质的步长（如68）")
 
     # ===================== 2. 反向解析核心逻辑（对比双矩阵） =====================
     color_list = []  # 存储解析出的原始颜色列表
@@ -79,8 +95,8 @@ def matrix_to_colors(
     # 遍历次数上限为总位置数（避免无限循环）
     for _ in range(total_pos):
         # 一维索引转二维坐标（行优先：pos = i*N + j → i=pos//N, j=pos%N）
-        i = current_pos // N
-        j = current_pos % N
+        i = current_pos // expected_outer_size
+        j = current_pos % expected_outer_size
 
         # 仅收集frame_matrix中为None的位置（填充位）的颜色
         if frame_matrix[i][j] is None:

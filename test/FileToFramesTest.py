@@ -23,6 +23,7 @@ from sender.generator.colors_to_matrix import colors_to_matrix
 def EncodeFull(path:str, raid:RaidLevel, rs:RSLevel):
     data_groups = Encode(path, raid, rs)
     frames = GroupToFrames(data_groups) # type: ignore
+    print(frames)
     pages = len(frames)
     for i in range(pages):
         colors = bytes_to_colors(frames[i])

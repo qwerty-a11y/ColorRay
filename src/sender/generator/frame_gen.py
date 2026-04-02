@@ -227,5 +227,4 @@ def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> 
                 # 标记该位置需要边框
                 need_border_grid[r][c] = True
    
-    drawer(color_grid, need_border_grid, "debug"+str(curpage)+".png")
     return color_grid, need_border_grid

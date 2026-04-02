@@ -2,9 +2,10 @@ import math
 import os
 from typing import List, Tuple
 
+from common import Config
 from common.CorrectionLevel import RaidLevel,RSLevel
 from common.File import FileToBinary
-from common.Config import FrameDataSize, GroupDataSize
+from common.Config import FrameDataSize, GroupDataSize, RSCorrectionBytes
 from common.RSmodule import rs_encode_bytes, rs_decode_bytes
 from common.Raid import Raid5Encode, Raid6Encode, Raid5Decode, Raid6Decode
 from common.CRC16 import verify_crc16
@@ -44,18 +45,16 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
     FileGroupSize = 0
     match rs:
         case RSLevel.LEVEL1_5:
-            RSCorrectBytesPerGroup = 10
-            FileGroupSize = GroupDataSize - 2 - RSCorrectBytesPerGroup * 4
+            RSCorrectBytesPerGroup = RSCorrectionBytes.LEVEL1_5.r
+            FileGroupSize = GroupDataSize - RSCorrectBytesPerGroup * RSCorrectionBytes.LEVEL1_5.b
         case RSLevel.LEVEL2_10:
-            RSCorrectBytesPerGroup = 20
-            FileGroupSize = GroupDataSize - 2 - RSCorrectBytesPerGroup * 4
+            RSCorrectBytesPerGroup = RSCorrectionBytes.LEVEL2_10.r
+            FileGroupSize = GroupDataSize - RSCorrectBytesPerGroup * RSCorrectionBytes.LEVEL2_10.b
         case RSLevel.LEVEL3_15:
-            RSCorrectBytesPerGroup = 40
-            FileGroupSize = GroupDataSize - 2 - RSCorrectBytesPerGroup * 3
+            RSCorrectBytesPerGroup = RSCorrectionBytes.LEVEL3_15.r
+            FileGroupSize = GroupDataSize - RSCorrectBytesPerGroup * RSCorrectionBytes.LEVEL3_15.b
         case RSLevel.NONE:
-            RSPercent = 0
-            FileGroupSize = GroupDataSize - 2
-            
+            FileGroupSize = GroupDataSize
     
 
     # 根据 RaidLevel 决定第一维的元素个数 (行数)
@@ -94,6 +93,12 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
             end = start + int(FileGroupSize)
             chunk = binary[start:end]
             
+            # 【修改】在此处立即填充至 FileGroupSize (针对最后一个可能不满的块)
+            # 注意：此时还未添加 RS 校验码，所以目标是填充到 FileGroupSize
+            if len(chunk) < int(FileGroupSize):
+                padding_len = int(FileGroupSize) - len(chunk)
+                chunk = chunk + os.urandom(padding_len)
+            
             # 填充到对应位置
             data_groups[row][col] = chunk
             
@@ -102,112 +107,103 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
         if current_index >= total_chunks:
             break
 
-    # 为每个数据块添加 CRC16 校验码和 RS 纠错码
-    for row in range(row_count):
-        for col in range(col_count):
-            # 【修改】跳过仍为 None 的位置（这些将是随机填充块，不需要校验和纠错）
-            if data_groups[row][col] is None:
-                continue
-                
-            from common.CRC16 import add_crc16
-            data_groups[row][col] = rs_encode_bytes(add_crc16(data_groups[row][col]), RSCorrectBytesPerGroup)
-
-    # 【修改新增】在所有真实数据完成校验和编码后，再填充随机数据并统一长度
+    # 【修改新增】在所有真实数据填充完成后，对剩余的 None 位置填充随机数据
+    # 此时所有数据块长度均为 FileGroupSize
     for row in range(row_count):
         for col in range(col_count):
             if data_groups[row][col] is None:
-                # 生成与 GroupDataSize 长度一致的随机数据，确保所有块长度相同
-                data_groups[row][col] = os.urandom(int(GroupDataSize))
-            else:
-                # 【新增】对于已有数据块，如果长度不满 GroupDataSize，进行补全
-                current_len = len(data_groups[row][col])
-                if current_len < int(GroupDataSize):
-                    # 使用 \x00 填充至标准长度
-                    padding_len = int(GroupDataSize) - current_len
-                    data_groups[row][col] = data_groups[row][col] + os.urandom(padding_len) 
+                # 生成与 FileGroupSize 长度一致的随机数据
+                data_groups[row][col] = os.urandom(int(FileGroupSize))
 
-    # 若 Raid 等级不为 NONE，调用对应的 Raid 编码函数
+    # 【修改】先进行 Raid 编码
+    # 此时数据块长度为 FileGroupSize，Raid 编码会生成新的校验块（长度也为 FileGroupSize）
+    # 编码后，data_groups 的行数可能会增加（例如 RAID5 增加 1 行，RAID6 增加 2 行）
     match raid:
         case RaidLevel.LEVEL1_10 | RaidLevel.LEVEL2_20:
-            # RAID 5 编码：输入为 List[List[bytes]]，输出为扩展后的磁盘列表
-            # 注意：Raid5Encode 期望输入是 [磁盘 1 块列表，磁盘 2 块列表...]
-            # 当前 data_groups 是 [行][列]，需要转置或调整视角以符合“磁盘”定义
-            # 假设当前 data_groups 的每一行代表一个原始数据盘的数据块序列
-            data_groups = Raid5Encode(data_groups)
+            # RAID 5 编码
+            data_groups = Raid5Encode(data_groups) # type: ignore
             
         case RaidLevel.LEVEL3_40:
             # RAID 6 编码
-            data_groups = Raid6Encode(data_groups)
+            data_groups = Raid6Encode(data_groups) # type: ignore
             
         case RaidLevel.NONE:
             # 无需 RAID 编码，保持原状
             pass
 
+    # 【修改】后进行 RS 编码
+    # 此时对所有块（包括原始数据块和 Raid 生成的校验块）统一添加 RS 纠错码
+    # 编码后长度将变为 GroupDataSize (FileGroupSize + RS 校验码)
+    RSCorrectBytesPerGroup = 0
+    match rs:
+        case RSLevel.LEVEL1_5:
+            RSCorrectBytesPerGroup = RSCorrectionBytes.LEVEL1_5.r
+        case RSLevel.LEVEL2_10:
+            RSCorrectBytesPerGroup = RSCorrectionBytes.LEVEL2_10.r
+        case RSLevel.LEVEL3_15:
+            RSCorrectBytesPerGroup = RSCorrectionBytes.LEVEL3_15.r
+        case RSLevel.NONE:
+            RSCorrectBytesPerGroup = 0
+
+    if RSCorrectBytesPerGroup > 0:
+        for row in range(len(data_groups)):
+            for col in range(len(data_groups[0])):
+                if data_groups[row][col] is not None:
+                    data_groups[row][col] = rs_encode_bytes(data_groups[row][col], RSCorrectBytesPerGroup) # type: ignore
+    
+
     return data_groups
 
 def GroupToFrames(group: List[List[bytes]]) -> List[bytes]:
     """
-    将二维数据组按列序号优先、行序号其次的顺序展平成帧列表
-    每 8 个数据块组成一个帧
+    将二维数据组按行优先顺序展平成帧列表
+    每 8 个数据块组成一个帧（每行内每8列一组）
     
-    :param group: 二维数据组 [行数][列数]
-    :return: 帧列表，每个帧包含 8 个数据块的拼接字节
-    
-    示例（3行×4列）:
-    [[A, B, C, D],
-     [E, F, G, H],
-     [I, J, K, L]]
-    
-    展平顺序: A, E, I, B, F, J, C, G, K, D, H, L
-    分帧结果: [A+E+I+B+F+J+C+G, K+D+H+L+...]
+    :param group: 二维数据组 [行数][列数]，矩形矩阵
+    :return: 帧列表，每个帧包含同一行的连续8个数据块的拼接
     """
     frames = []
-    
     if not group or not group[0]:
         return frames
     
     rows = len(group)
     cols = len(group[0])
     
-    # 按列优先遍历，按行遍历每列的数据块
-    blocks = []
-    for col in range(cols):
-        for row in range(rows):
-            if group[row][col] is not None:
-                blocks.append(group[row][col])
+    # 调试输出目录
+    debug_encode_dir = "debug_encoded_raw_chunks"
+    os.makedirs(debug_encode_dir, exist_ok=True)
     
-    # 每 8 个块组成一个帧
-    for i in range(0, len(blocks), 8):
-        frame = b''
-        for j in range(i, min(i + 8, len(blocks))):
-            frame += blocks[j]
-        frames.append(frame)
+    # 按行优先遍历，每行内每8个块组成一帧
+    block_index_global = 0
+    for row in range(rows):
+        row_blocks = []
+        for col in range(cols):
+            chunk = group[row][col]
+            if chunk is not None:
+                row_blocks.append(chunk)
+                block_index_global += 1
+        # 将当前行的所有块每8个一组组成帧
+        for i in range(0, len(row_blocks), 8):
+            frame = b''.join(row_blocks[i:i+8])
+            frames.append(frame)
     
+    print(f"[Debug] 已保存 {block_index_global} 个独立编码分片至目录：{debug_encode_dir}")
     return frames
 
 
 def FramesToGroup(frames: List[bytes], raid: RaidLevel) -> List[List[bytes]]:
     """
     将帧列表恢复为二维数据组（GroupToFrames 的反向操作）
-    
-    :param frames: 帧列表，每个帧为一个块（GroupDataSize 字节）
-    :param raid: RAID 等级，用于确定行数
-    :return: 二维数据组 [行数][列数]
-    
-    工作流程：
-    1. 每个帧即一个块，直接分为 8 份（对应原始的 8 行）
-    2. 根据 RAID 等级将 8 份块按行数重新组织
-    3. 最终形成二维数组
+    行优先，每行内每8个块对应一个帧
     """
     # 确定行数
-    row_count = 0
     match raid:
         case RaidLevel.LEVEL1_10:
-            row_count = 9
+            row_count = 10
         case RaidLevel.LEVEL2_20:
-            row_count = 4
+            row_count = 5
         case RaidLevel.LEVEL3_40:
-            row_count = 3
+            row_count = 5
         case RaidLevel.NONE:
             row_count = 1
         case _:
@@ -215,35 +211,31 @@ def FramesToGroup(frames: List[bytes], raid: RaidLevel) -> List[List[bytes]]:
     
     if row_count == 0:
         return []
-    
     if not frames:
         return [[]]
     
-    # 每个帧分为 8 份数据块
-    blocks = []
-    chunk_size = GroupDataSize // 8  # 帧被分成 8 份
-    
-    for frame in frames:
-        for i in range(8):
-            start = i * chunk_size
-            end = start + chunk_size if i < 7 else len(frame)  # 最后一份包含剩余数据
-            if start < len(frame):
-                blocks.append(frame[start:end])
-    
-    # 根据块数和行数计算列数
-    col_count = math.ceil(len(blocks) / row_count)
+    # 每个帧的大小为 GroupDataSize，但这里我们只需知道每行有多少帧
+    total_frames = len(frames)
+    if total_frames % row_count != 0:
+        raise ValueError(f"帧数 {total_frames} 不能被行数 {row_count} 整除")
+    frames_per_row = total_frames // row_count
+    cols_per_row = frames_per_row * 8  # 每行列数 = 每行帧数 * 8
     
     # 初始化二维数组
-    group: List[List[bytes]] = [[None for _ in range(col_count)] for _ in range(row_count)]
+    group: List[List[bytes]] = [[None for _ in range(cols_per_row)] for _ in range(row_count)]
     
-    # 按列优先顺序填充（与 GroupToFrames 的展平顺序相反）
-    block_index = 0
-    for col in range(col_count):
-        for row in range(row_count):
-            if block_index < len(blocks):
-                group[row][col] = blocks[block_index]
-                block_index += 1
+    frame_idx = 0
+    for row in range(row_count):
+        for f in range(frames_per_row):
+            frame = frames[frame_idx]
+            frame_idx += 1
+            # 将帧拆分为8个块（每个块大小相等）
+            chunk_size = len(frame) // 8
+            for i in range(8):
+                start = i * chunk_size
+                end = start + chunk_size if i < 7 else len(frame)
+                chunk = frame[start:end]
+                col = f * 8 + i
+                group[row][col] = chunk
     
     return group
-
-
