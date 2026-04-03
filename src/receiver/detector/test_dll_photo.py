@@ -7,18 +7,11 @@ import os
 # [0. 环境配置：解决 Python 3.8+ 依赖加载问题]
 # =============================================================================
 current_dir = os.path.abspath(os.path.dirname(__file__))
-
-# 如果你使用的是自己编译的 OpenCV CUDA 版，请确保 bin 目录在搜索路径中
-opencv_bin_path = r"D:\Code of C++\lib\opencv\x64\vc18\bin"
-#这个路径是错的，但是我没用到，所以我也懒得删了，dll给你们了，你们看着用就行
-
 if hasattr(os, 'add_dll_directory'):
     os.add_dll_directory(current_dir)
-    if os.path.exists(opencv_bin_path):
-        os.add_dll_directory(opencv_bin_path)
 
 # =============================================================================
-# [1. 加载 DLL 并定义接口]
+# [1. 加载 CPU 版 DLL 并更新接口签名]
 # =============================================================================
 dll_path = os.path.join(current_dir, 'warp_engine.dll')
 if not os.path.exists(dll_path):
