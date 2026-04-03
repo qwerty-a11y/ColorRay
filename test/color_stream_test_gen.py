@@ -24,7 +24,7 @@ def generate_discrete_block_color_array() -> list[tuple[int, int, int]]:
     :return: 长度为16844的颜色列表
     """
     # 核心参数
-    TOTAL_LENGTH = Config.DataBlocks    # 总长度
+    TOTAL_LENGTH = Config.FrameDataBlocks    # 总长度
     BLOCK_SIZE = 16         # 每个颜色块的长度
     FULL_BLOCK_COUNT = TOTAL_LENGTH // BLOCK_SIZE  # 完整块数：16844//16=1052
     REMAIN_COUNT = TOTAL_LENGTH % BLOCK_SIZE       # 剩余位置数：4
@@ -75,7 +75,7 @@ def generate_random_colors() -> list[tuple[int, int, int]]:
     - List[tuple(int, int, int)]: RGB 颜色元组列表
     """
     
-    num_blocks = Config.DataBlocks
+    num_blocks = Config.FrameDataBlocks
 
     # 如果 num_blocks 为 0，直接返回空列表
     if num_blocks <= 0:

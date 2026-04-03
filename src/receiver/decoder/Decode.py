@@ -1,0 +1,363 @@
+import math
+import os
+from typing import List
+
+from common import Config
+from common.CRC16 import verify_crc16
+from common.CorrectionLevel import RSLevel, RaidLevel
+from common.Raid import Raid5Decode, Raid6Decode
+from receiver.decoder.colors_to_bytes import colors_to_bytes
+from receiver.decoder.image_to_matrix import array_to_matrix, image_to_matrix
+from receiver.decoder.matrix_to_colors import matrix_to_colors
+from common.RSmodule import rs_decode_bytes
+from receiver.detector.img_extract import process_photo
+from sender.encoder.Encode import FramesToGroup
+from sender.generator.frame_gen import COLORS, generate_frame
+
+def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int, RaidLevel, RSLevel]:
+    """
+    从图片帧中读取三处元信息（左上、左下、右上），进行多数表决。
+    若有两处及以上相同以此为准，否则抛出异常。
+    注意：不返回当前页码，仅返回 (allpage, raid, rs)。
+    右上角读取时需反转颜色顺序以匹配生成逻辑。
+    
+    :return: (allpage, raid, rs)
+    :raises ValueError: 当三处元信息无法达成多数一致时
+    """
+    # 获取网格尺寸配置 (与 frame_gen 一致)
+    GRID_COUNT = Config.QRSize
+    
+    def extract_meta_at_location(start_r: int, start_c: int, reverse_colors: bool = False) -> tuple[int, RaidLevel, RSLevel]:
+        """
+        从指定起始位置读取 10 个颜色块并解析元信息
+        对应 frame_gen 中的逻辑：
+        header = page_to_color(curpage)+page_to_color(allpage)+raid_rs_to_color(raid, rs)
+        前 4 位：页码 (4 位 8 进制) - 【本次修改：忽略】
+        中 4 位：总页数 (4 位 8 进制)
+        后 2 位：RAID(1 位) + RS(1 位)
+        
+        :param reverse_colors: 是否反转颜色列表（用于右上角修复）
+        """
+        colors = []
+        for k in range(10):
+            c = start_c + k
+            if 0 <= start_r < GRID_COUNT and 0 <= c < GRID_COUNT:
+                color_val = matrix[start_r][c]
+                
+                # 将 RGB 元组映射回 0-7 的索引 (此时 color_val 已是 RGB 格式)
+                try:
+                    idx = COLORS.index(color_val)
+                except ValueError:
+                    # 如果颜色不匹配标准色，抛出错误或返回无效标记
+                    raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val}")
+                colors.append(idx)
+            else:
+                raise ValueError(f"坐标越界：({start_r}, {c})")
+        
+        # 【修改】如果是右上角，需要反转颜色列表以匹配生成时的反向写入
+        if reverse_colors:
+            colors = colors[::-1]
+        
+        # 【修改】跳过前 4 位页码，直接从索引 4 开始解析总页数
+        # 解析总页数 (原中 4 位，现索引 4-7)
+        allpage_str = "".join(str(d) for d in colors[4:8])
+        allpage = int(allpage_str, 8)
+        # 解析 RAID 等级 (第 9 位，索引 8)
+        raid_map = {
+            0: RaidLevel.NONE,
+            1: RaidLevel.LEVEL1_10,
+            2: RaidLevel.LEVEL2_20,
+            3: RaidLevel.LEVEL3_40
+        }
+        raid = raid_map.get(colors[8])
+        if raid is None:
+            raise ValueError(f"无效的 RAID 等级颜色索引：{colors[8]}")
+            
+        # 解析 RS 等级 (第 10 位，索引 9)
+        rs_map = {
+            0: RSLevel.NONE,
+            1: RSLevel.LEVEL1_5,
+            2: RSLevel.LEVEL2_10,
+            3: RSLevel.LEVEL3_15
+        }
+        rs = rs_map.get(colors[9])
+        if rs is None:
+            raise ValueError(f"无效的 RS 等级颜色索引：{colors[9]}")
+            
+        
+        # 【修改】返回不包含页码的元组
+        return allpage, raid, rs
+
+    # 定义三处读取位置的起始坐标 (参考 frame_gen 中的绘制逻辑)
+    # 1. 左上：(17, 2) - 顺序读取
+    pos1 = (15, 0)
+    # 2. 左下：(GRID_COUNT - 18, 2) - 顺序读取
+    pos2 = (GRID_COUNT - 16, 0)
+    # 3. 右上：(17, GRID_COUNT - 12) - 【修改】需反转颜色顺序
+    # frame_gen 中写入逻辑为：for k in range(10): set_cell(17, GRID_COUNT - 3 - k, header[k])
+    # 即物理位置上从左到右读取到的颜色，对应逻辑 header 的顺序是反的
+    pos3 = (15, GRID_COUNT - 10)
+    results = []
+    errors = []
+    
+    # 左上
+    try:
+        res = extract_meta_at_location(pos1[0], pos1[1], reverse_colors=False)
+        results.append(res)
+    except Exception as e:
+        errors.append(f"位置 1(左上) 读取失败：{str(e)}")
+        results.append(None)
+
+    # 左下
+    try:
+        res = extract_meta_at_location(pos2[0], pos2[1], reverse_colors=False)
+        results.append(res)
+    except Exception as e:
+        errors.append(f"位置 2(左下) 读取失败：{str(e)}")
+        results.append(None)
+
+    # 右上 - 【修改】启用 reverse_colors=True
+    try:
+        res = extract_meta_at_location(pos3[0], pos3[1], reverse_colors=True)
+        results.append(res)
+    except Exception as e:
+        errors.append(f"位置 3(右上) 读取失败：{str(e)}")
+        results.append(None)
+
+    # 多数表决逻辑
+    valid_results = [r for r in results if r is not None]
+    
+    if len(valid_results) < 2:
+        raise ValueError(f"无法读取足够的有效元信息 (成功 {len(valid_results)}/3). 错误详情：{'; '.join(errors)}")
+    
+    # 检查是否有两个或以上相同
+    # 比较元组 (allpage, raid, rs)
+    count_map = {}
+    for res in valid_results:
+        count_map[res] = count_map.get(res, 0) + 1
+    
+    final_result = None
+    for res, count in count_map.items():
+        if count >= 2:
+            final_result = res
+            break
+    
+    if final_result is None:
+        # 如果没有出现两次以上的相同结果，说明三者互不相同或只有两两不同且无多数
+        raise ValueError(f"三处元信息不一致且无多数派：{results}. 无法确定正确元信息。")
+    
+    # final_result 现在是 (allpage, raid, rs)
+    return final_result
+
+def GetCurrentPage(matrix: list[list[tuple[int,int,int]]]) -> int:
+    """
+    从图片帧中提取当前页码
+    :param frame: 图片帧路径
+    :return: 当前页码
+    :raises ValueError: 当无法读取页码或三处页码不一致时抛出异常
+    """
+    # 获取网格尺寸配置 (与 frame_gen 一致)
+    GRID_COUNT = Config.QRSize
+    # 读取三个角落的的前 4 个颜色块解析当前页码
+    def extract_page_at_location(start_r: int, start_c: int) -> int:
+        colors = []
+        for k in range(4):
+            c = start_c + k
+            if 0 <= start_r < GRID_COUNT and 0 <= c < GRID_COUNT:
+                color_val = matrix[start_r][c]
+                
+                # 将 RGB 元组映射回 0-7 的索引 (此时 color_val 已是 RGB 格式)
+                try:
+                    idx = COLORS.index(color_val)
+                except ValueError:
+                    # 如果颜色不匹配标准色，抛出错误或返回无效标记
+                    raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val} (RGB: {color_val})")
+                colors.append(idx)
+            else:
+                raise ValueError(f"坐标越界：({start_r}, {c})")
+        page_str = "".join(str(d) for d in colors)
+        return int(page_str, 8)
+    # 定义三个读取位置的起始坐标 (参考 frame_gen 中的绘制逻辑)
+    # 1. 左上：(15, 0)
+    pos1 = (15, 0)
+    # 2. 左下：(GRID_COUNT - 16, 0)
+    pos2 = (GRID_COUNT - 16, 0)
+    # 3. 右上：(15, GRID_COUNT - 10)
+    pos3 = (15, GRID_COUNT - 10)
+    pages = []
+    errors = []
+    for pos in [pos1, pos2, pos3]:
+        try:
+            page = extract_page_at_location(pos[0], pos[1])
+            pages.append(page)
+        except Exception as e:
+            errors.append(f"位置 {pos} 读取页码失败：{str(e)}")
+    if not pages:
+        raise ValueError(f"无法读取任何页码。错误详情：{'; '.join(errors)}")
+    # 多数表决
+    page_count = {}
+    for p in pages:
+        page_count[p] = page_count.get(p, 0) + 1
+    final_page = None
+    for p, count in page_count.items():
+        if count >= 2:
+            final_page = p
+            break
+    if final_page is None:
+        raise ValueError(f"读取的页码不一致且无多数派：{pages}. 无法确定当前页码。")
+    return final_page
+
+def calculate_encoded_size(file_size: int, rs: RSLevel) -> int:
+    """
+    根据原始文件大小和 RS 纠错码位数，计算最终的 RS 编码后数据大小。
+    
+    参数:
+        file_size (int): 原始文件的大小（字节）。
+        rs_correct_bytes (int): 每个数据块的 RS 纠错码字节数。
+        
+    返回:
+        int: 编码后的理论总数据大小。
+    """
+    RSCorrectBytesPerGroup = 0
+    RSBlocks = 0
+    match rs:
+        case RSLevel.LEVEL1_5:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL1_5.r
+            RSBlocks = Config.RSCorrectionBytes.LEVEL1_5.b
+        case RSLevel.LEVEL2_10:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL2_10.r
+            RSBlocks = Config.RSCorrectionBytes.LEVEL2_10.b
+        case RSLevel.LEVEL3_15:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL3_15.r
+            RSBlocks = Config.RSCorrectionBytes.LEVEL3_15.b
+        case RSLevel.NONE:
+            RSCorrectBytesPerGroup = 0
+    return file_size + RSBlocks * RSCorrectBytesPerGroup
+
+def DecodeFull(pages: int, path: str, raid: RaidLevel, rs: RSLevel):
+    RSCorrectBytesPerGroup = 0
+    match rs:
+        case RSLevel.LEVEL1_5:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL1_5.r
+        case RSLevel.LEVEL2_10:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL2_10.r
+        case RSLevel.LEVEL3_15:
+            RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL3_15.r
+        case RSLevel.NONE:
+            RSCorrectBytesPerGroup = 0
+    print(f"开始解码: pages={pages}, path='{path}', raid={raid}, rs={rs}")
+
+    # 初始化 full_data_groups（锯齿状，用于存储每页的8个数据块）
+    full_data_groups: list[list[bytes]] = []
+    match raid:
+        case RaidLevel.NONE:
+            full_data_groups = [[None for _ in range(pages * 8)]]  # type: ignore
+        case RaidLevel.LEVEL1_10:
+            full_data_groups = [[None for _ in range((pages * 8 + 9 - i) // 10)] for i in range(10)]  # type: ignore
+        case RaidLevel.LEVEL2_20, RaidLevel.LEVEL3_40:
+            full_data_groups = [[None for _ in range((pages * 8 + 4 - i) // 5)] for i in range(5)]  # type: ignore
+
+    img_index = -1
+    debug_decode_dir = "debug_decoded_raw_chunks"
+    os.makedirs(debug_decode_dir, exist_ok=True)
+
+    while True:
+        img_index += 1
+        img_path = os.path.join(path, str(img_index) + ".png")
+        if not os.path.exists(img_path):
+            print(f"未找到图片 {img_path}，结束读取")
+            break
+        array = process_photo(img_path)
+        if array is None:
+            print(f"警告: 无法处理图片 {img_path}，跳过该页")
+            continue
+
+        matrix = array_to_matrix(array)
+        curpage = GetCurrentPage(matrix)
+        raid_disk = (curpage + 1) % len(full_data_groups)
+        frame, _ = generate_frame(curpage, pages, raid, rs)
+        colors = matrix_to_colors(frame, matrix)
+        data_bytes = colors_to_bytes(colors)
+        print(f"第 {img_index} 帧颜色数据转换为字节完成，页码 {curpage}，长度 {len(data_bytes)} 字节")
+
+        group_size = len(data_bytes) // Config.FrameGroupCount
+        for i in range(Config.FrameGroupCount):
+            start = i * group_size
+            end = (i + 1) * group_size if i < Config.FrameGroupCount - 1 else len(data_bytes)
+            chunk = data_bytes[start:end]
+
+            # 保存调试文件：格式 chunk_row{raid_disk}_col{curpage*8+i}.bin
+            col_index = curpage * 8 + i
+            debug_filename = f"chunk_{raid_disk}_{col_index}.bin"
+            debug_path = os.path.join(debug_decode_dir, debug_filename)
+            with open(debug_path, 'wb') as f:
+                f.write(chunk)
+
+            # RS 解码
+            decoded_data = rs_decode_bytes(chunk, RSCorrectBytesPerGroup)
+            if decoded_data == b'':
+                decoded_data = None
+            # 只有当前位置为空时才填入（保留首次成功解码的数据）
+            if full_data_groups[raid_disk][i] is None:
+                full_data_groups[raid_disk][i] = decoded_data
+
+    # RAID 解码
+    match raid:
+        case RaidLevel.NONE:
+            pass
+        case RaidLevel.LEVEL1_10:
+            full_data_groups = Raid5Decode(full_data_groups)
+        case RaidLevel.LEVEL2_20:
+            full_data_groups = Raid5Decode(full_data_groups)
+        case RaidLevel.LEVEL3_40:
+            full_data_groups = Raid6Decode(full_data_groups)
+
+    # 此时 full_data_groups 是原始数据矩阵（行数 = 数据盘数，列数可能不等，但编码时所有行等长）
+    # 按列优先顺序提取所有数据块（与编码填充顺序一致）
+    # 首先确定最大列数
+    max_cols = max(len(row) for row in full_data_groups) if full_data_groups else 0
+    raw_data = b''
+    for col in range(max_cols):
+        for row in range(len(full_data_groups)):
+            if col < len(full_data_groups[row]):
+                chunk = full_data_groups[row][col]
+                if chunk is None:
+                    chunk = b'\x00' * Config.GroupDataSize
+            else:
+                chunk = b'\x00' * Config.GroupDataSize
+            raw_data += chunk
+
+    # 解析文件头
+    HEADER_LEN = 2 + 254 + 8
+    if len(raw_data) < HEADER_LEN:
+        raise ValueError("数据过短，无法解析文件头")
+    name_len = int.from_bytes(raw_data[:2], 'big')
+    if name_len > 254:
+        name_len = 254
+    file_name_bytes = raw_data[2:2+name_len]
+    try:
+        file_name = file_name_bytes.decode('utf-8', errors='ignore')
+    except Exception:
+        file_name = "decoded_file"
+    if not file_name:
+        file_name = "decoded_file"
+    file_size = int.from_bytes(raw_data[256:256+8], 'big')
+    if file_size < 0 or file_size > 10 * 1024 * 1024 * 1024:
+        print(f"警告：文件大小异常 ({file_size})，设为0")
+        file_size = 0
+
+    # 提取有效内容
+    file_content = raw_data[HEADER_LEN:HEADER_LEN + file_size]
+    if len(file_content) < file_size:
+        print(f"警告：有效数据不足，实际 {len(file_content)} 字节，预期 {file_size}")
+
+    # 写入文件
+    final_name = file_name
+    counter = 1
+    while os.path.exists(final_name):
+        base, ext = os.path.splitext(file_name)
+        final_name = f"{base}({counter}){ext}"
+        counter += 1
+    with open(final_name, 'wb') as f:
+        f.write(file_content)
+    print(f"解码完成，输出文件：{final_name}")

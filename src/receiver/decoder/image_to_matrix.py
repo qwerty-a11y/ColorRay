@@ -3,27 +3,51 @@ from PIL import Image
 import os
 import cv2
 
-def save_debug_image(img_array, stage_name, prefix="debug"):
-    """保存调试图片，覆盖旧文件"""
-    output_dir = "debug_output"
-    if not os.path.exists(output_dir): os.makedirs(output_dir)
-    save_arr = np.clip(img_array, 0, 255).astype(np.uint8)
-    filepath = os.path.join(output_dir, f"{prefix}_{stage_name}.png")
-    Image.fromarray(save_arr).save(filepath)
+from common import Config
 
-def image_to_matrix(image_path: str, run_mode='normal') -> list[list[tuple[int, int, int]]]:
-    file_prefix = os.path.splitext(os.path.basename(image_path))[0]
-    block_num = 137 if run_mode == 'test' else 133
+def array_to_pillow_image(img_array: np.ndarray) -> Image.Image:
+    """
+    将 numpy 数组 (_Array[tuple[int, int, int], unsignedinteger[_8Bit]]) 转换为 Pillow 图片对象
+    
+    :param img_array: 形状为 (H, W, 3) 的 numpy 数组，元素为 0-255 的整数
+    :return: PIL.Image.Image 对象
+    """
+    # 确保数据在 0-255 范围内并转换为 uint8 类型
+    safe_array = np.clip(img_array, 0, 255).astype(np.uint8)
+    
+    # 【修改】OpenCV 读取的图片是 BGR 格式，需要转换为 RGB 格式
+    # 交换第 0 通道 (B) 和第 2 通道 (R)
+    if safe_array.shape[-1] == 3:
+        rgb_array = cv2.cvtColor(safe_array, cv2.COLOR_BGR2RGB)
+    else:
+        rgb_array = safe_array
+    
+    # 创建 PIL 图片对象，指定模式为 RGB
+    return Image.fromarray(rgb_array, mode='RGB')
+
+def array_to_matrix(img_array: np.ndarray) -> list[list[tuple[int, int, int]]]:
+    """
+    将 numpy 矩阵转换为 RGB 元组矩阵
+    :param img_array: 形状为 (H, W, 3) 的 numpy 数组，元素为 0-255 的整数
+    :return: RGB 元组矩阵（列表套列表）
+    """
+    img = array_to_pillow_image(img_array)
+    return pillow_to_matrix(img)
+def pillow_to_matrix(image: Image.Image, run_mode: str = 'normal') -> list[list[tuple[int, int, int]]]:
+    """
+    将 Pillow 图片对象转换为 137×137 的 RGB 元组矩阵
+    :param image: PIL.Image.Image 对象
+    :param run_mode: 运行模式，'test' 或 'normal'，决定使用 137×137 的完整矩阵（test）还是 133×133 的核心矩阵（normal）
+    :return: 137×137 的 RGB 元组矩阵（列表套列表）
+    """
+    block_num = Config.QRSize + 4 if run_mode == 'test' else Config.QRSize
     win_size = 11
 
-    try:
-        img = Image.open(image_path).convert('RGB')
-        target_size = block_num * win_size
-        img_resized = img.resize((target_size, target_size), Image.Resampling.LANCZOS)
-        img_array = np.array(img_resized, dtype=np.float32)
-        # save_debug_image(img_array, "01_original", prefix=file_prefix)
-    except Exception as e:
-        print(f"读取出错: {e}"); return []
+    img = image.convert('RGB')
+    target_size = block_num * win_size
+    img_resized = img.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    img_array = np.array(img_resized, dtype=np.float32)
+    # save_debug_image(img_array, "01_original", prefix=file_prefix)
 
     # --- [核心修改] 步骤 A: 强行将全局 RGB 均值校准到 128 ---
     # 计算当前各通道均值
@@ -73,10 +97,26 @@ def image_to_matrix(image_path: str, run_mode='normal') -> list[list[tuple[int, 
     # save_debug_image(binary_array, "05_final_binary", prefix=file_prefix)
 
     # --- 步骤 E: Padding 137 ---
-    final_size = 137
+    final_size = Config.QRSize + 4 if run_mode == 'test' else Config.QRSize
     final_array = np.full((final_size, final_size, 3), 255, dtype=np.uint8)
-    start = 2 if run_mode == 'normal' else 0
+    start = 0
     # 注意：这里要确保切片范围正确
     final_array[start:start+block_num, start:start+block_num, :] = binary_array[:block_num, :block_num]
 
     return [[tuple(map(int, final_array[r, c])) for c in range(final_size)] for r in range(final_size)]
+
+def save_debug_image(img_array, stage_name, prefix="debug"):
+    """保存调试图片，覆盖旧文件"""
+    output_dir = "debug_output"
+    if not os.path.exists(output_dir): os.makedirs(output_dir)
+    save_arr = np.clip(img_array, 0, 255).astype(np.uint8)
+    filepath = os.path.join(output_dir, f"{prefix}_{stage_name}.png")
+    Image.fromarray(save_arr).save(filepath)
+
+def image_to_matrix(image_path: str, run_mode='normal') -> list[list[tuple[int, int, int]]]:
+    try:
+        image = Image.open(image_path)
+    except Exception as e:
+        print(f"Error opening image {image_path}: {e}")
+        raise OSError(f"无法打开图像文件 {image_path}")
+    return pillow_to_matrix(image, run_mode)
