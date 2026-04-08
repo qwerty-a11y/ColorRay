@@ -160,7 +160,7 @@ def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> 
 
     # ===================== 3. 绘制右下小定位块 =====================
     # 起始位置：距离下方/右方白色边框内侧4单位，向左上扩展
-    small_finder_start = GRID_COUNT - 2 - 4 - 10  # 137-2-4-10=121
+    small_finder_start = GRID_COUNT - 2 - 4 - 8  # 137-2-4-8=123
     # 外层：12x12 白色（修正原注释笔误）
     draw_filled_rect(small_finder_start - 1, small_finder_start - 1,
                      small_finder_start + 10, small_finder_start + 10, (255, 255, 255))
@@ -176,11 +176,11 @@ def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> 
 
     # ===================== 4. 绘制右下角8种标准色块（2行4列） =====================
     # 位置：紧贴白色边框内侧，倒数第4行、倒数第6列开始
-    std_color_start_r = GRID_COUNT - 4
-    std_color_start_c = GRID_COUNT - 6
+    std_color_start_r = GRID_COUNT - 3
+    std_color_start_c = GRID_COUNT - 10
     for k in range(8):
-        r = std_color_start_r + (k // 4)  # 前4个在第1行，后4个在第2行
-        c = std_color_start_c + (k % 4)   # 每行4列依次排列
+        r = std_color_start_r
+        c = std_color_start_c + k  # 每行4列依次排列
         set_cell(r, c, COLORS[k])
 
     # ===================== 5. 给大定位块添加1单位宽度的白色边框 =====================
