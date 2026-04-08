@@ -1,17 +1,17 @@
-import math
+import asyncio
 import os
-from typing import List
+import sys
 
 from common import Config
-from common.CRC16 import verify_crc16
 from common.CorrectionLevel import RSLevel, RaidLevel
 from common.Raid import Raid5Decode, Raid6Decode
 from receiver.decoder.colors_to_bytes import colors_to_bytes
-from receiver.decoder.image_to_matrix import array_to_matrix, image_to_matrix
+from receiver.decoder.image_to_matrix import array_to_matrix
 from receiver.decoder.matrix_to_colors import matrix_to_colors
 from common.RSmodule import rs_decode_bytes
+from receiver.decoder.video_decoder import stream_frames_rgb24
 from receiver.detector.img_extract import process_photo
-from sender.encoder.Encode import FramesToGroup
+from sender.generator.drawer import drawer
 from sender.generator.frame_gen import COLORS, generate_frame
 
 def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int, RaidLevel, RSLevel]:
@@ -47,7 +47,8 @@ def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int,
                 # 将 RGB 元组映射回 0-7 的索引 (此时 color_val 已是 RGB 格式)
                 try:
                     idx = COLORS.index(color_val)
-                except ValueError:
+                except ValueError as e:
+                    print(e.args)
                     # 如果颜色不匹配标准色，抛出错误或返回无效标记
                     raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val}")
                 colors.append(idx)
@@ -234,8 +235,35 @@ def calculate_encoded_size(file_size: int, rs: RSLevel) -> int:
             RSCorrectBytesPerGroup = 0
     return file_size + RSBlocks * RSCorrectBytesPerGroup
 
-def DecodeFull(pages: int, path: str, raid: RaidLevel, rs: RSLevel):
+async def DecodeFull(video: str):
+
+    generator = stream_frames_rgb24(video, 'numpy') # type: ignore
+    async def get_frame():
+        matrix = array_to_matrix(process_photo(await generator.__anext__()))
+        return matrix
+    # 初始化异步视频抽帧
+    first_frame = await get_frame()
+    second_frame = await get_frame()
+    #读取第一帧，获取总页数和raid、rs级别
+    pages, raid, rs = None, None, None
+    try:
+        if first_frame is None:
+            raise ValueError(f"无法处理第一帧图片")
+        pages, raid, rs = GetCorrectionPagesInfo(first_frame)
+    except Exception as e:
+        print(e.args)
+        try:
+            if second_frame is None:
+                raise ValueError(f"无法处理第二帧图片")
+            matrix = array_to_matrix(second_frame)
+            pages, raid, rs = GetCorrectionPagesInfo(matrix)
+        except Exception as e:
+            print(f"Error: 无法从前两帧获取总页数和纠错级别。请检查帧文件是否正确。")
+            sys.exit(1)
+
     RSCorrectBytesPerGroup = 0
+    
+
     match rs:
         case RSLevel.LEVEL1_5:
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL1_5.r
@@ -245,7 +273,7 @@ def DecodeFull(pages: int, path: str, raid: RaidLevel, rs: RSLevel):
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL3_15.r
         case RSLevel.NONE:
             RSCorrectBytesPerGroup = 0
-    print(f"开始解码: pages={pages}, path='{path}', raid={raid}, rs={rs}")
+    print(f"开始解码: pages={pages}, raid={raid}, rs={rs}")
 
     # 初始化 full_data_groups（锯齿状，用于存储每页的8个数据块）
     full_data_groups: list[list[bytes]] = []
@@ -262,20 +290,55 @@ def DecodeFull(pages: int, path: str, raid: RaidLevel, rs: RSLevel):
     os.makedirs(debug_decode_dir, exist_ok=True)
 
     while True:
-        img_index += 1
-        img_path = os.path.join(path, str(img_index) + ".png")
-        if not os.path.exists(img_path):
-            print(f"未找到图片 {img_path}，结束读取")
+        matrix = None
+        try:
+            img_index += 1
+            if img_index <= 1:
+                match img_index:
+                    case 0:
+                        matrix = first_frame
+                    case 1:
+                        matrix = second_frame
+            else:
+                matrix = await get_frame()
+
+            # --------------------调试-----------------------
+            frame, need_border = generate_frame(0, 0, raid, rs)
+            
+            # 为 matrix 添加 2 像素宽的白色边框
+            white_pixel = (255, 255, 255)
+            border_width = 2
+            
+            # 获取原始尺寸
+            original_height = len(matrix)
+            if original_height > 0:
+                original_width = len(matrix[0])
+                
+                # 创建新的带边框的矩阵
+                new_height = original_height + 2 * border_width
+                new_width = original_width + 2 * border_width
+                
+                # 初始化新矩阵
+                bordered_matrix = [[white_pixel for _ in range(new_width)] for _ in range(new_height)]
+                
+                # 填充原始数据到中心区域
+                for r in range(original_height):
+                    for c in range(original_width):
+                        bordered_matrix[r + border_width][c + border_width] = matrix[r][c]
+                
+
+            drawer(bordered_matrix,need_border, "debug_raw_frame.png")
+            # --------------------调试-----------------------
+        except StopAsyncIteration:
+            print("已读取完所有帧，结束解码")
             break
-        array = process_photo(img_path)
-        if array is None:
-            print(f"警告: 无法处理图片 {img_path}，跳过该页")
+        except Exception as e:
+            print(f"读取帧 {img_index+1} 失败: {str(e)}")
             continue
 
-        matrix = array_to_matrix(array)
         curpage = GetCurrentPage(matrix)
         raid_disk = (curpage + 1) % len(full_data_groups)
-        frame, _ = generate_frame(curpage, pages, raid, rs)
+        frame, _ = generate_frame(curpage, pages if pages > 0 else 1, raid, rs)
         colors = matrix_to_colors(frame, matrix)
         data_bytes = colors_to_bytes(colors)
         print(f"第 {img_index} 帧颜色数据转换为字节完成，页码 {curpage}，长度 {len(data_bytes)} 字节")

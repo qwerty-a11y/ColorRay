@@ -7,6 +7,7 @@ FrameDataBlocks = QRSize * QRSize - 225*3 - 144 - 8 - 30
 FrameDataSize = (FrameDataBlocks*3) // 8
 FrameGroupCount = 8
 GroupDataSize = FrameDataSize // FrameGroupCount
+VideoFrameRate = 15
 
 def find_optimal_rb(L_target, p_target):
     best_r = None

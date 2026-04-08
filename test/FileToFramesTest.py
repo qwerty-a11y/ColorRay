@@ -1,5 +1,7 @@
+import asyncio
 import sys
 import os
+import ffmpeg
 
 # 获取当前脚本所在目录 (test)
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -12,24 +14,29 @@ src_path = os.path.join(project_root, 'src')
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
+from common import Config
 from common.CorrectionLevel import RSLevel, RaidLevel
 from sender.encoder.Encode import Encode, GroupToFrames
-from sender.generator.drawer import drawer
+from sender.generator.drawer import drawer, mem_drawer
 from sender.generator.frame_gen import generate_frame
 from sender.generator.bytes_to_colors import bytes_to_colors
 from sender.generator.colors_to_matrix import colors_to_matrix
+from sender.generator.video_generator import async_pil_images_to_lossless_video
 
-
-def EncodeFull(path:str, raid:RaidLevel, rs:RSLevel):
-    data_groups = Encode(path, raid, rs)
-    frames = GroupToFrames(data_groups) # type: ignore
-    print(frames)
+async def async_generator(frames: list[bytes], raid: RaidLevel, rs: RSLevel):
     pages = len(frames)
     for i in range(pages):
         colors = bytes_to_colors(frames[i])
         frame, need_border = generate_frame(i, pages, raid, rs)
         matrix = colors_to_matrix(frame, colors) # type: ignore
-        drawer(matrix, need_border, f"{i}.png")
+        yield mem_drawer(matrix, need_border)
+
+def EncodeFull(path:str, raid:RaidLevel, rs:RSLevel):
+    data_groups = Encode(path, raid, rs)
+    frames = GroupToFrames(data_groups) # type: ignore
+    generator = async_generator(frames, raid, rs)
+    output_video_path = os.path.join(project_root,"data","output", "output_video.mp4")
+    asyncio.run(async_pil_images_to_lossless_video(generator, output_video_path, fps=Config.VideoFrameRate, codec="libx264", pix_fmt_in="rgb24", preset="ultrafast"))
 
 
 if __name__ == "__main__":

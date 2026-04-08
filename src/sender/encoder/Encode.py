@@ -157,7 +157,7 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
 def GroupToFrames(group: List[List[bytes]]) -> List[bytes]:
     """
     将二维数据组按行优先顺序展平成帧列表
-    每 8 个数据块组成一个帧（每行内每8列一组）
+    逻辑：先处理完第一行的所有数据块（每8个块组成一帧），再处理第二行，以此类推。
     
     :param group: 二维数据组 [行数][列数]，矩形矩阵
     :return: 帧列表，每个帧包含同一行的连续8个数据块的拼接
@@ -173,16 +173,19 @@ def GroupToFrames(group: List[List[bytes]]) -> List[bytes]:
     debug_encode_dir = "debug_encoded_raw_chunks"
     os.makedirs(debug_encode_dir, exist_ok=True)
     
-    # 按行优先遍历，每行内每8个块组成一帧
     block_index_global = 0
+    
+    # 【修改】外层循环遍历行，确保先把一行分完再分下一行
     for row in range(rows):
         row_blocks = []
+        # 内层循环遍历当前行的所有列
         for col in range(cols):
             chunk = group[row][col]
             if chunk is not None:
                 row_blocks.append(chunk)
                 block_index_global += 1
-        # 将当前行的所有块每8个一组组成帧
+        
+        # 当前行的所有块收集完毕后，每8个一组组成帧
         for i in range(0, len(row_blocks), 8):
             frame = b''.join(row_blocks[i:i+8])
             frames.append(frame)
@@ -194,7 +197,8 @@ def GroupToFrames(group: List[List[bytes]]) -> List[bytes]:
 def FramesToGroup(frames: List[bytes], raid: RaidLevel) -> List[List[bytes]]:
     """
     将帧列表恢复为二维数据组（GroupToFrames 的反向操作）
-    行优先，每行内每8个块对应一个帧
+    逻辑：按行优先顺序，先从帧列表中取出属于第一行的所有帧，恢复第一行的数据块；
+         再取出属于第二行的所有帧，恢复第二行的数据块，以此类推。
     """
     # 确定行数
     match raid:
@@ -214,27 +218,35 @@ def FramesToGroup(frames: List[bytes], raid: RaidLevel) -> List[List[bytes]]:
     if not frames:
         return [[]]
     
-    # 每个帧的大小为 GroupDataSize，但这里我们只需知道每行有多少帧
     total_frames = len(frames)
     if total_frames % row_count != 0:
         raise ValueError(f"帧数 {total_frames} 不能被行数 {row_count} 整除")
+    
+    # 计算每行有多少个帧
     frames_per_row = total_frames // row_count
-    cols_per_row = frames_per_row * 8  # 每行列数 = 每行帧数 * 8
+    # 每行的列数 = 每行帧数 * 8
+    cols_per_row = frames_per_row * 8
     
     # 初始化二维数组
     group: List[List[bytes]] = [[None for _ in range(cols_per_row)] for _ in range(row_count)]
     
     frame_idx = 0
+    
+    # 【修改】外层循环遍历行，确保先恢复完一行再恢复下一行
     for row in range(row_count):
+        # 处理当前行的所有帧
         for f in range(frames_per_row):
             frame = frames[frame_idx]
             frame_idx += 1
-            # 将帧拆分为8个块（每个块大小相等）
+            
+            # 将帧拆分为8个块
             chunk_size = len(frame) // 8
             for i in range(8):
                 start = i * chunk_size
                 end = start + chunk_size if i < 7 else len(frame)
                 chunk = frame[start:end]
+                
+                # 计算在当前行中的列索引
                 col = f * 8 + i
                 group[row][col] = chunk
     

@@ -5,3 +5,4 @@ reedsolo
 zfec
 os
 datetime
+ffmpeg-python
