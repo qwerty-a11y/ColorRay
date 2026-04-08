@@ -11,7 +11,6 @@ from receiver.decoder.matrix_to_colors import matrix_to_colors
 from common.RSmodule import rs_decode_bytes
 from receiver.decoder.video_decoder import stream_frames_rgb24
 from receiver.detector.img_extract import process_photo
-from sender.generator.drawer import drawer
 from sender.generator.frame_gen import COLORS, generate_frame
 
 def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int, RaidLevel, RSLevel]:
@@ -239,7 +238,10 @@ async def DecodeFull(video: str):
 
     generator = stream_frames_rgb24(video, 'numpy') # type: ignore
     async def get_frame():
-        matrix = array_to_matrix(process_photo(await generator.__anext__()))
+        array = None
+        while array is None:
+            array = process_photo(await generator.__anext__()) # type: ignore
+        matrix = array_to_matrix(array)
         return matrix
     # 初始化异步视频抽帧
     first_frame = await get_frame()
@@ -255,35 +257,40 @@ async def DecodeFull(video: str):
         try:
             if second_frame is None:
                 raise ValueError(f"无法处理第二帧图片")
-            matrix = array_to_matrix(second_frame)
-            pages, raid, rs = GetCorrectionPagesInfo(matrix)
+            pages, raid, rs = GetCorrectionPagesInfo(second_frame)
         except Exception as e:
             print(f"Error: 无法从前两帧获取总页数和纠错级别。请检查帧文件是否正确。")
             sys.exit(1)
 
     RSCorrectBytesPerGroup = 0
-    
-
+    FileGroupSize = 0
     match rs:
         case RSLevel.LEVEL1_5:
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL1_5.r
+            FileGroupSize = Config.GroupDataSize - RSCorrectBytesPerGroup * Config.RSCorrectionBytes.LEVEL1_5.b
         case RSLevel.LEVEL2_10:
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL2_10.r
+            FileGroupSize = Config.GroupDataSize - RSCorrectBytesPerGroup * Config.RSCorrectionBytes.LEVEL2_10.b
         case RSLevel.LEVEL3_15:
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL3_15.r
+            FileGroupSize = Config.GroupDataSize - RSCorrectBytesPerGroup * Config.RSCorrectionBytes.LEVEL3_15.b
         case RSLevel.NONE:
-            RSCorrectBytesPerGroup = 0
+            FileGroupSize = Config.GroupDataSize
     print(f"开始解码: pages={pages}, raid={raid}, rs={rs}")
 
     # 初始化 full_data_groups（锯齿状，用于存储每页的8个数据块）
     full_data_groups: list[list[bytes]] = []
+    rows = 0
     match raid:
         case RaidLevel.NONE:
-            full_data_groups = [[None for _ in range(pages * 8)]]  # type: ignore
+            rows = pages * Config.FrameGroupCount
+            full_data_groups = [[None for _ in range(rows)]]  # type: ignore
         case RaidLevel.LEVEL1_10:
-            full_data_groups = [[None for _ in range((pages * 8 + 9 - i) // 10)] for i in range(10)]  # type: ignore
+            rows = pages * Config.FrameGroupCount // 10
+            full_data_groups = [[None for _ in range(rows)] for i in range(10)]  # type: ignore
         case RaidLevel.LEVEL2_20, RaidLevel.LEVEL3_40:
-            full_data_groups = [[None for _ in range((pages * 8 + 4 - i) // 5)] for i in range(5)]  # type: ignore
+            rows = pages * Config.FrameGroupCount // 5
+            full_data_groups = [[None for _ in range(rows)] for i in range(5)]  # type: ignore
 
     img_index = -1
     debug_decode_dir = "debug_decoded_raw_chunks"
@@ -301,43 +308,22 @@ async def DecodeFull(video: str):
                         matrix = second_frame
             else:
                 matrix = await get_frame()
-
-            # --------------------调试-----------------------
-            frame, need_border = generate_frame(0, 0, raid, rs)
-            
-            # 为 matrix 添加 2 像素宽的白色边框
-            white_pixel = (255, 255, 255)
-            border_width = 2
-            
-            # 获取原始尺寸
-            original_height = len(matrix)
-            if original_height > 0:
-                original_width = len(matrix[0])
-                
-                # 创建新的带边框的矩阵
-                new_height = original_height + 2 * border_width
-                new_width = original_width + 2 * border_width
-                
-                # 初始化新矩阵
-                bordered_matrix = [[white_pixel for _ in range(new_width)] for _ in range(new_height)]
-                
-                # 填充原始数据到中心区域
-                for r in range(original_height):
-                    for c in range(original_width):
-                        bordered_matrix[r + border_width][c + border_width] = matrix[r][c]
-                
-
-            drawer(bordered_matrix,need_border, "debug_raw_frame.png")
-            # --------------------调试-----------------------
         except StopAsyncIteration:
             print("已读取完所有帧，结束解码")
             break
         except Exception as e:
             print(f"读取帧 {img_index+1} 失败: {str(e)}")
             continue
-
-        curpage = GetCurrentPage(matrix)
-        raid_disk = (curpage + 1) % len(full_data_groups)
+        
+        curpage = None
+        try:
+            curpage = GetCurrentPage(matrix)
+        except Exception as e:
+            print(f"页码读取失败: {str(e)}. 跳过此帧.")
+            continue
+        raid_disk = curpage // (rows // 8)
+        raid_page = curpage % (rows // 8)
+        print(f"读取到第 {img_index+1} 帧，当前页码 {curpage}，对应 RAID 盘 {raid_disk} 页 {raid_page}")
         frame, _ = generate_frame(curpage, pages if pages > 0 else 1, raid, rs)
         colors = matrix_to_colors(frame, matrix)
         data_bytes = colors_to_bytes(colors)
@@ -349,20 +335,15 @@ async def DecodeFull(video: str):
             end = (i + 1) * group_size if i < Config.FrameGroupCount - 1 else len(data_bytes)
             chunk = data_bytes[start:end]
 
-            # 保存调试文件：格式 chunk_row{raid_disk}_col{curpage*8+i}.bin
-            col_index = curpage * 8 + i
-            debug_filename = f"chunk_{raid_disk}_{col_index}.bin"
-            debug_path = os.path.join(debug_decode_dir, debug_filename)
-            with open(debug_path, 'wb') as f:
-                f.write(chunk)
+            print(f"页码{curpage}保存在{raid_disk},{i+raid_page*Config.FrameGroupCount}位置")
 
             # RS 解码
             decoded_data = rs_decode_bytes(chunk, RSCorrectBytesPerGroup)
             if decoded_data == b'':
                 decoded_data = None
             # 只有当前位置为空时才填入（保留首次成功解码的数据）
-            if full_data_groups[raid_disk][i] is None:
-                full_data_groups[raid_disk][i] = decoded_data
+            if full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] is None:
+                full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] = decoded_data
 
     # RAID 解码
     match raid:
@@ -385,9 +366,9 @@ async def DecodeFull(video: str):
             if col < len(full_data_groups[row]):
                 chunk = full_data_groups[row][col]
                 if chunk is None:
-                    chunk = b'\x00' * Config.GroupDataSize
+                    chunk = b'\x00' * FileGroupSize
             else:
-                chunk = b'\x00' * Config.GroupDataSize
+                chunk = b'\x00' * FileGroupSize
             raw_data += chunk
 
     # 解析文件头

@@ -85,7 +85,7 @@ async def stream_frames_rgb24(
             data = await process.stdout.readexactly(frame_size)
 
             # 将字节流转换为 PIL Image
-            img = Image.frombytes("RGB", (width, height), data)
+            img = Image.frombytes("RGB", (height, width), data)
 
             if output_format == "pil":
                 yield img
