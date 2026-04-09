@@ -3,6 +3,7 @@ import numpy as np
 import ctypes
 import os
 import time
+from sklearn.cluster import KMeans
 
 # =============================================================================
 # [0. DLL 依赖路径配置]
@@ -18,40 +19,29 @@ dll_path = os.path.join(current_dir, 'warp_engine.dll')
 if not os.path.exists(dll_path):
     raise FileNotFoundError(f"找不到 DLL: {dll_path}，请确保已编译最新版 C++ 引擎。")
 
-# 加载动态库
 warp_engine = ctypes.CDLL(dll_path, winmode=0)
-# 接口签名必须与 Canvas 中的 11 参数版本严格对齐
-# 1-7: 图像基础参数, 8-10: 物理网格参数, 11: 解码指针
 warp_engine.ExtractQRCode.argtypes = [
-    ctypes.POINTER(ctypes.c_uint8),  # 1. in_data
-    ctypes.c_int,                   # 2. width
-    ctypes.c_int,                   # 3. height
-    ctypes.c_int,                   # 4. channels
-    ctypes.POINTER(ctypes.c_uint8),  # 5. out_data
-    ctypes.c_int,                   # 6. out_width
-    ctypes.c_int,                   # 7. out_height
-    ctypes.c_int,                   # 8. grid_size
-    ctypes.c_int,                   # 9. quiet_zone
-    ctypes.c_int,                   # 10. large_finder
-    ctypes.POINTER(ctypes.c_uint8)   # 11. decoded_data (这就是那个导致 0x02 崩溃的缺失位)
+    ctypes.POINTER(ctypes.c_uint8), 
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, 
+    ctypes.POINTER(ctypes.c_uint8), 
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, 
+    ctypes.POINTER(ctypes.c_uint8) 
 ]
 warp_engine.ExtractQRCode.restype = ctypes.c_bool
 
 # =============================================================================
-# [2. 核心处理封装 零拷贝内存池]
+# [2. 核心处理封装]
 # =============================================================================
-def process_frame(frame, pre_allocated_out, out_size=1024, grid_size=283, quiet_zone=2, large_finder=14):
+def process_frame(frame, pre_allocated_out, out_size=1024, grid_size=133, quiet_zone=2, large_finder=10):
     if frame is None:
         return False
     
-    # 强制内存连续，这是 Python 传指针给 C++ 的安全红线
     img_bgr = np.ascontiguousarray(frame)
     h, w, c = img_bgr.shape
     
     in_ptr = img_bgr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
     out_ptr = pre_allocated_out.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
     
-    # 调用 11 参数接口，最后一位传 None 代表暂时不接收 137x137 解码矩阵
     return warp_engine.ExtractQRCode(
         in_ptr, w, h, c, 
         out_ptr, out_size, out_size,
@@ -59,65 +49,94 @@ def process_frame(frame, pre_allocated_out, out_size=1024, grid_size=283, quiet_
         None 
     )
 
+def fast_decode_and_reconstruct(img_bgr, grid_size=133):
+    """
+    利用向量化操作和K-Means，从存在微小形变的图像中提取完美的 0/255 标准网格。
+    """
+    h, w, _ = img_bgr.shape
+    cell_h, cell_w = h / grid_size, w / grid_size
+    # 搜索半径：在理论中心周围 35% 范围内寻找最纯净像素
+    search_r = max(1, int(min(cell_w, cell_h) * 0.35))
+
+    # 1. 极速计算全图局部方差矩阵
+    img_float = img_bgr.astype(np.float32)
+    img_sq = img_float ** 2
+    E_x = cv2.blur(img_float, (3, 3))
+    E_x2 = cv2.blur(img_sq, (3, 3))
+    var_img = np.sum(E_x2 - E_x**2, axis=2)
+
+    sampled_colors = np.zeros((grid_size * grid_size, 3), dtype=np.float32)
+
+    # 2. 网格游走采样
+    idx = 0
+    for row in range(grid_size):
+        for col in range(grid_size):
+            cx = int(col * cell_w + cell_w / 2)
+            cy = int(row * cell_h + cell_h / 2)
+            cx, cy = np.clip(cx, search_r, w - search_r - 1), np.clip(cy, search_r, h - search_r - 1)
+
+            # 寻找局部方差最小点
+            roi_var = var_img[cy-search_r : cy+search_r+1, cx-search_r : cx+search_r+1]
+            min_idx = np.argmin(roi_var)
+            dy, dx = np.unravel_index(min_idx, roi_var.shape)
+
+            # 采样平滑后的颜色
+            sampled_colors[idx] = E_x[cy - search_r + dy, cx - search_r + dx]
+            idx += 1
+
+    # 3. K-Means 聚类还原 8 种标准色
+    kmeans = KMeans(n_clusters=8, random_state=42, n_init=3).fit(sampled_colors)
+    standard_centers = np.where(kmeans.cluster_centers_ > 127, 255, 0).astype(np.uint8)
+
+    # 4. 极速重构图像 (Kronecker 积)
+    output_scale = 6 
+    labels_2d = kmeans.labels_.reshape((grid_size, grid_size))
+    color_map = standard_centers[labels_2d]
+    reconstructed_img = np.kron(color_map, np.ones((output_scale, output_scale, 1), dtype=np.uint8))
+
+    return reconstructed_img
+
 # =============================================================================
 # [3. 主运行程序]
 # =============================================================================
 if __name__ == "__main__":
-    video_path = 'test3.mp4'  
+    video_path = 'test1.MOV'  
     OUT_SIZE = 1024
+    GRID_SIZE = 133
     
-    # --- 物理参数设定 (对应你的 283+2+14 方案) ---
-    GRID_SIZE = 283           
-    QUIET_ZONE = 2            
-    LARGE_FINDER = 14         
-    REPEAT_COUNT = 10         
-    
-    # 预分配输出缓冲区
     shared_out_buffer = np.zeros((OUT_SIZE, OUT_SIZE, 3), dtype=np.uint8)
     
-    print(f">>> 物理参数驱动引擎启动 | 数据源: {video_path}")
-    print(f"[*] 架构配置: Grid={GRID_SIZE}, QuietZone={QUIET_ZONE}, Finder={LARGE_FINDER}")
-    
+    print(f">>> 自动解码引擎启动 | 数据源: {video_path}")
+    print(f"[*] 当前配置: Grid={GRID_SIZE} | 解码状态: 始终开启")
+
     try:
-        for loop_idx in range(1, REPEAT_COUNT + 1):
+        for loop_idx in range(1, 11):
             cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                print(f"错误: 无法打开视频 {video_path}")
-                break
+            if not cap.isOpened(): break
                 
-            frame_in_loop = 0
             while True:
                 ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                frame_in_loop += 1
+                if not ret: break
                 
-                # 执行处理
-                success = process_frame(
-                    frame, shared_out_buffer, 
-                    out_size=OUT_SIZE, 
-                    grid_size=GRID_SIZE, 
-                    quiet_zone=QUIET_ZONE, 
-                    large_finder=LARGE_FINDER
-                )
+                # 1. 调用 DLL 进行全局拉平
+                success = process_frame(frame, shared_out_buffer, out_size=OUT_SIZE, grid_size=GRID_SIZE)
                 
-                # 显示原图监控
-                cv2.imshow("Input Stream", cv2.resize(frame, (800, 600)))        
-                
-                # 显示拉伸结果
                 if success:
-                    cv2.imshow(f"Physical Warp Output ({GRID_SIZE})", shared_out_buffer)
+                    # 2. 自动进行局部纠偏与 K-Means 解码
+                    # 如果觉得卡顿，可以每隔 2 帧处理一次
+                    clean_grid = fast_decode_and_reconstruct(shared_out_buffer, grid_size=GRID_SIZE)
                     
+                    # 显示结果
+                    cv2.imshow("Warped Output", cv2.resize(shared_out_buffer, (512, 512)))
+                    cv2.imshow("Perfect Decoded Grid", clean_grid)
+                
                 if cv2.waitKey(1) & 0xFF == ord('q'):
-                    print(">>> 用户强制退出。")
                     cap.release()
                     cv2.destroyAllWindows()
                     exit()
                     
             cap.release()
-            print(f"[*] 第 {loop_idx}/{REPEAT_COUNT} 遍循环完成 ({frame_in_loop} 帧)")
+            print(f"[*] 第 {loop_idx} 遍循环完成")
             
     finally:
         cv2.destroyAllWindows()
-        print("\n>>> 全案测试结束。")
