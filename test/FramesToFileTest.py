@@ -22,5 +22,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     video_file = sys.argv[1]
-    asyncio.run(DecodeFull(video_file))
+
+    import cProfile
+    cProfile.run(f"asyncio.run(DecodeFull('{video_file}'))")
+    #asyncio.run(DecodeFull(video_file))
     

@@ -2,18 +2,22 @@ import asyncio
 import os
 import sys
 
+import numpy as np
+
 from common import Config
 from common.CorrectionLevel import RSLevel, RaidLevel
 from common.Raid import Raid5Decode, Raid6Decode
+from receiver.decoder.array_to_bytes import array_to_bytes, numpy_to_int
 from receiver.decoder.colors_to_bytes import colors_to_bytes
 from receiver.decoder.image_to_matrix import array_to_matrix
 from receiver.decoder.matrix_to_colors import matrix_to_colors
 from common.RSmodule import rs_decode_bytes
 from receiver.decoder.video_decoder import stream_frames_rgb24
 from receiver.detector.img_extract import process_photo
+from receiver.detector.test_dll_mov import fast_decode_and_reconstruct
 from sender.generator.frame_gen import COLORS, generate_frame
 
-def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int, RaidLevel, RSLevel]:
+def GetCorrectionPagesInfo(matrix: np.ndarray) -> tuple[int, RaidLevel, RSLevel]:
     """
     从图片帧中读取三处元信息（左上、左下、右上），进行多数表决。
     若有两处及以上相同以此为准，否则抛出异常。
@@ -25,6 +29,16 @@ def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int,
     """
     # 获取网格尺寸配置 (与 frame_gen 一致)
     GRID_COUNT = Config.QRSize
+
+    '''
+    # 调试：输出整个矩阵
+    for row in range(GRID_COUNT):
+        row_colors = []
+        for col in range(GRID_COUNT):
+            idx_val = numpy_to_int(matrix, row, col)
+            row_colors.append(str(idx_val))
+        print(" ".join(row_colors))
+    '''
     
     def extract_meta_at_location(start_r: int, start_c: int, reverse_colors: bool = False) -> tuple[int, RaidLevel, RSLevel]:
         """
@@ -41,15 +55,7 @@ def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int,
         for k in range(10):
             c = start_c + k
             if 0 <= start_r < GRID_COUNT and 0 <= c < GRID_COUNT:
-                color_val = matrix[start_r][c]
-                
-                # 将 RGB 元组映射回 0-7 的索引 (此时 color_val 已是 RGB 格式)
-                try:
-                    idx = COLORS.index(color_val)
-                except ValueError as e:
-                    print(e.args)
-                    # 如果颜色不匹配标准色，抛出错误或返回无效标记
-                    raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val}")
+                idx = numpy_to_int(matrix, start_r, c)  # 每个像素3字节
                 colors.append(idx)
             else:
                 raise ValueError(f"坐标越界：({start_r}, {c})")
@@ -57,7 +63,7 @@ def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int,
         # 【修改】如果是右上角，需要反转颜色列表以匹配生成时的反向写入
         if reverse_colors:
             colors = colors[::-1]
-        
+        print(colors)
         # 【修改】跳过前 4 位页码，直接从索引 4 开始解析总页数
         # 解析总页数 (原中 4 位，现索引 4-7)
         allpage_str = "".join(str(d) for d in colors[4:8])
@@ -89,7 +95,7 @@ def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int,
         return allpage, raid, rs
 
     # 定义三处读取位置的起始坐标 (参考 frame_gen 中的绘制逻辑)
-    # 1. 左上：(17, 2) - 顺序读取
+    # 1. 左上：(15, 0) - 顺序读取
     pos1 = (15, 0)
     # 2. 左下：(GRID_COUNT - 18, 2) - 顺序读取
     pos2 = (GRID_COUNT - 16, 0)
@@ -149,7 +155,7 @@ def GetCorrectionPagesInfo(matrix: list[list[tuple[int,int,int]]]) -> tuple[int,
     # final_result 现在是 (allpage, raid, rs)
     return final_result
 
-def GetCurrentPage(matrix: list[list[tuple[int,int,int]]]) -> int:
+def GetCurrentPage(matrix: np.ndarray) -> int:
     """
     从图片帧中提取当前页码
     :param frame: 图片帧路径
@@ -164,14 +170,7 @@ def GetCurrentPage(matrix: list[list[tuple[int,int,int]]]) -> int:
         for k in range(4):
             c = start_c + k
             if 0 <= start_r < GRID_COUNT and 0 <= c < GRID_COUNT:
-                color_val = matrix[start_r][c]
-                
-                # 将 RGB 元组映射回 0-7 的索引 (此时 color_val 已是 RGB 格式)
-                try:
-                    idx = COLORS.index(color_val)
-                except ValueError:
-                    # 如果颜色不匹配标准色，抛出错误或返回无效标记
-                    raise ValueError(f"位置 ({start_r}, {c}) 颜色无效：{color_val} (RGB: {color_val})")
+                idx = numpy_to_int(matrix, start_r, c)
                 colors.append(idx)
             else:
                 raise ValueError(f"坐标越界：({start_r}, {c})")
@@ -241,7 +240,7 @@ async def DecodeFull(video: str):
         array = None
         while array is None:
             array = process_photo(await generator.__anext__()) # type: ignore
-        matrix = array_to_matrix(array)
+        matrix = fast_decode_and_reconstruct(array)
         return matrix
     # 初始化异步视频抽帧
     first_frame = await get_frame()
@@ -317,7 +316,7 @@ async def DecodeFull(video: str):
         
         curpage = None
         try:
-            curpage = GetCurrentPage(matrix)
+            curpage = GetCurrentPage(matrix) # type: ignore
         except Exception as e:
             print(f"页码读取失败: {str(e)}. 跳过此帧.")
             continue
@@ -325,8 +324,8 @@ async def DecodeFull(video: str):
         raid_page = curpage % (rows // 8)
         print(f"读取到第 {img_index+1} 帧，当前页码 {curpage}，对应 RAID 盘 {raid_disk} 页 {raid_page}")
         frame, _ = generate_frame(curpage, pages if pages > 0 else 1, raid, rs)
-        colors = matrix_to_colors(frame, matrix)
-        data_bytes = colors_to_bytes(colors)
+
+        data_bytes = array_to_bytes(frame, matrix) # type: ignore
         print(f"第 {img_index} 帧颜色数据转换为字节完成，页码 {curpage}，长度 {len(data_bytes)} 字节")
 
         group_size = len(data_bytes) // Config.FrameGroupCount
@@ -343,18 +342,18 @@ async def DecodeFull(video: str):
                 decoded_data = None
             # 只有当前位置为空时才填入（保留首次成功解码的数据）
             if full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] is None:
-                full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] = decoded_data
+                full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] = decoded_data # type: ignore
 
     # RAID 解码
     match raid:
         case RaidLevel.NONE:
             pass
         case RaidLevel.LEVEL1_10:
-            full_data_groups = Raid5Decode(full_data_groups)
+            full_data_groups = Raid5Decode(full_data_groups) # type: ignore
         case RaidLevel.LEVEL2_20:
-            full_data_groups = Raid5Decode(full_data_groups)
+            full_data_groups = Raid5Decode(full_data_groups) # type: ignore
         case RaidLevel.LEVEL3_40:
-            full_data_groups = Raid6Decode(full_data_groups)
+            full_data_groups = Raid6Decode(full_data_groups) # type: ignore
 
     # 此时 full_data_groups 是原始数据矩阵（行数 = 数据盘数，列数可能不等，但编码时所有行等长）
     # 按列优先顺序提取所有数据块（与编码填充顺序一致）
@@ -394,6 +393,9 @@ async def DecodeFull(video: str):
     file_content = raw_data[HEADER_LEN:HEADER_LEN + file_size]
     if len(file_content) < file_size:
         print(f"警告：有效数据不足，实际 {len(file_content)} 字节，预期 {file_size}")
+
+    print(f"文件名: {file_name}, 文件大小: {file_size} 字节, 实际数据长度: {len(file_content)} 字节")
+    print(f"文件头数据：{raw_data[:HEADER_LEN]}")
 
     # 写入文件
     final_name = file_name

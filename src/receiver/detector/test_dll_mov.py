@@ -5,6 +5,8 @@ import os
 import time
 from sklearn.cluster import KMeans
 
+from common import Config
+
 # =============================================================================
 # [0. DLL 依赖路径配置]
 # =============================================================================
@@ -49,7 +51,7 @@ def process_frame(frame, pre_allocated_out, out_size=1024, grid_size=133, quiet_
         None 
     )
 
-def fast_decode_and_reconstruct(img_bgr, grid_size=133):
+def fast_decode_and_reconstruct(img_bgr:np.ndarray, grid_size=Config.QRSize):
     """
     利用向量化操作和K-Means，从存在微小形变的图像中提取完美的 0/255 标准网格。
     """
@@ -89,11 +91,15 @@ def fast_decode_and_reconstruct(img_bgr, grid_size=133):
     standard_centers = np.where(kmeans.cluster_centers_ > 127, 255, 0).astype(np.uint8)
 
     # 4. 极速重构图像 (Kronecker 积)
-    output_scale = 6 
+    output_scale = 6
     labels_2d = kmeans.labels_.reshape((grid_size, grid_size))
     color_map = standard_centers[labels_2d]
     reconstructed_img = np.kron(color_map, np.ones((output_scale, output_scale, 1), dtype=np.uint8))
 
+    # 保存调试图片
+    debug_save_path = os.path.join(current_dir, "debug_reconstructed.png")
+    cv2.imwrite(debug_save_path, reconstructed_img)
+    print(f">>> 已保存重构图像至：{debug_save_path}")
     return reconstructed_img
 
 # =============================================================================

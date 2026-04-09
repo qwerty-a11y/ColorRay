@@ -83,8 +83,8 @@ async def stream_frames_rgb24(
         while True:
             # 精确读取一帧的原始字节
             data = await process.stdout.readexactly(frame_size)
-
             # 将字节流转换为 PIL Image
+            # 修复: Image.frombytes 的 size 参数应为 (width, height)
             img = Image.frombytes("RGB", (height, width), data)
 
             if output_format == "pil":
@@ -93,6 +93,7 @@ async def stream_frames_rgb24(
                 import numpy as np
                 import cv2
                 # 转为 numpy 数组 (RGB)
+                # 此时 img.size 为 (width, height)，np.array(img) 形状为 (height, width, 3)
                 rgb_array = np.array(img)
                 # 转为 BGR 供 OpenCV 使用
                 bgr_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
