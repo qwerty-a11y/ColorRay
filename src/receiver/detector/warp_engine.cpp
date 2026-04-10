@@ -73,6 +73,7 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {
         }
         if (cnt >= 2) {
             Moments mu = moments(contours[i], false);
+            // 严格保持用户要求的 500 阈值
             if (mu.m00 >= 500) {
                 centers.push_back(Point3f((float)(mu.m10 / mu.m00), (float)(mu.m01 / mu.m00), (float)mu.m00));
             }
@@ -125,6 +126,7 @@ Point3f FindSingleMarkerInROI(const Mat& roi_img, int ch) {
         }
         if (cnt >= 2) {
             Moments mu = moments(contours[i], false);
+            // 严格保持用户要求的 50 阈值
             if (mu.m00 > 50 && mu.m00 > max_area) { 
                 max_area = (float)mu.m00;
                 best_center = Point3f((float)(mu.m10 / mu.m00), (float)(mu.m01 / mu.m00), (float)mu.m00);
@@ -207,6 +209,7 @@ static bool use_tracking = false;
 static double total_time_ms = 0;
 static long long frame_counter = 0;
 
+// 【参数驱动版接口】：11 个参数，与 Python 脚本完美对齐
 __declspec(dllexport) bool ExtractQRCode(
     unsigned char* in_data, int width, int height, int channels,
     unsigned char* out_data, int out_width, int out_height,
@@ -289,7 +292,7 @@ __declspec(dllexport) bool ExtractQRCode(
 
     if (current_corners.size() == 4) {
         if (use_tracking) {
-            float alpha = 0.95f; float deadzone_radius = 0.5f; 
+            float alpha = 0.99f; float deadzone_radius = 0.5f; 
             for (int i = 0; i < 4; i++) {
                 float dist = (float)norm(current_corners[i] - prev_corners[i]);
                 if (dist < deadzone_radius) current_corners[i] = prev_corners[i];
@@ -299,9 +302,8 @@ __declspec(dllexport) bool ExtractQRCode(
         prev_corners = current_corners;
         use_tracking = true;
         Point2f tl = current_corners[0], tr = current_corners[1], br = current_corners[2], bl = current_corners[3];
-/*==============================================================================
-                                [自适应数学矫正模块]
-==============================================================================*/
+        
+        // --- 核心数学计算：自动推导物理比例 ---
         float logic_total_width = (float)grid_size + 2.0f * (float)quiet_zone;
         float center_offset = (float)quiet_zone + (float)large_finder / 2.0f ;
         float r_min = center_offset / logic_total_width;
@@ -319,9 +321,9 @@ __declspec(dllexport) bool ExtractQRCode(
         if (decoded_data != nullptr) DecodePayload(out_img, decoded_data, grid_size, quiet_zone);
     } else { use_tracking = false; return false; }
 
-/*==============================================================================
-                                [性能监控模块]
-==============================================================================*/
+    // =========================================================================
+    // 【恢复】：性能计算与控制台监控模块
+    // =========================================================================
     auto end = std::chrono::high_resolution_clock::now();
     double current_duration = std::chrono::duration<double, std::milli>(end - start).count();
     
