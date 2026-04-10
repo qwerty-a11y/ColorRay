@@ -5,152 +5,185 @@ import numpy as np
 import ctypes
 import os
 import time
-from sklearn.cluster import KMeans
+import concurrent.futures
+import threading
+import queue
 
 from common import Config
 
-def base_path():
-    """获取资源文件的绝对路径，兼容开发和 PyInstaller 打包"""
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.abspath(".")
-    return base_path
-def add_dll_search_path(path):
-    """将目录添加到当前进程的 PATH 环境变量中"""
-    if path not in os.environ['PATH'].split(os.pathsep):
-        os.environ['PATH'] = path + os.pathsep + os.environ['PATH']
-
-# 你的路径
-current_dir = base_path()
-
-add_dll_search_path(current_dir)
+# =============================================================================
+# [0. 解决中文路径读取/写入问题的核心组件]
+# =============================================================================
+def imwrite_chinese(filename, img):
+    try:
+        ext = os.path.splitext(filename)[1]
+        is_success, im_buf_arr = cv2.imencode(ext, img)
+        if is_success:
+            im_buf_arr.tofile(filename)
+            return True
+        return False
+    except Exception as e:
+        print(f"保存图片失败: {e}")
+        return False
 
 # =============================================================================
-# [1. 加载 CPU 版 DLL 并更新接口签名]
+# [1. 动态链接库加载路径]
 # =============================================================================
-dll_path = os.path.join(current_dir, 'warp_engine.dll')
-if not os.path.exists(dll_path):
-    raise FileNotFoundError(f"找不到 DLL: {dll_path}，请确保已编译最新版 C++ 引擎。")
+current_dir = os.path.abspath(os.path.dirname(__file__))
+if hasattr(os, 'add_dll_directory'):
+    os.add_dll_directory(current_dir)
 
-warp_engine = ctypes.CDLL(dll_path, winmode=0)
+warp_dll_path = os.path.join(current_dir, 'warp_engine.dll')
+if not os.path.exists(warp_dll_path):
+    raise FileNotFoundError(f"找不到 Warp 引擎: {warp_dll_path}")
+
+warp_engine = ctypes.CDLL(warp_dll_path, winmode=0)
 warp_engine.ExtractQRCode.argtypes = [
-    ctypes.POINTER(ctypes.c_uint8), 
-    ctypes.c_int, ctypes.c_int, ctypes.c_int, 
-    ctypes.POINTER(ctypes.c_uint8), 
-    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, 
-    ctypes.POINTER(ctypes.c_uint8) 
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_int, ctypes.c_int, ctypes.c_int, 
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_int, ctypes.c_int, 
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_uint8)
 ]
 warp_engine.ExtractQRCode.restype = ctypes.c_bool
 
+color_dll_path = os.path.join(current_dir, 'kmeans_core.dll')
+if not os.path.exists(color_dll_path):
+    raise FileNotFoundError(f"找不到 KMeans 引擎: {color_dll_path}")
+
+kmeans_core = ctypes.CDLL(color_dll_path, winmode=0)
+kmeans_core.ProcessColorEngine.argtypes = [
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_int, ctypes.c_int, 
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_int, ctypes.c_int  
+]
+kmeans_core.ProcessColorEngine.restype = ctypes.c_bool
+
 # =============================================================================
-# [2. 核心处理封装]
+# [全局内存池设置]：锁定物理内存，支持 60fps 稳定传输
 # =============================================================================
-def process_frame(frame, pre_allocated_out, out_size=1024, grid_size=133, quiet_zone=2, large_finder=10):
-    if frame is None:
-        return False
-    
-    img_bgr = np.ascontiguousarray(frame)
-    h, w, c = img_bgr.shape
-    
-    in_ptr = img_bgr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-    out_ptr = pre_allocated_out.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-    
-    return warp_engine.ExtractQRCode(
-        in_ptr, w, h, c, 
-        out_ptr, out_size, out_size,
-        grid_size, quiet_zone, large_finder,
-        None 
+POOL_SIZE = 300  # 预留 300 帧缓冲区，足以容纳 120 帧全量数据
+warp_pool = queue.Queue(maxsize=POOL_SIZE)
+decode_pool = queue.Queue(maxsize=POOL_SIZE)
+write_queue = queue.Queue()
+
+# =============================================================================
+# [2. 并发消费者任务：内存指针零拷贝处理]
+# =============================================================================
+def decode_in_memory(frame_idx, img_data, perfect_dir, out_size, output_scale, grid_size):
+    """
+    子线程接管内存指针，进行 C++ 猜色运算
+    """
+    # 1. 拿取预分配的解码容器
+    decode_buffer = decode_pool.get()
+
+    # 2. 压入 C++ Color Engine
+    success = kmeans_core.ProcessColorEngine(
+        img_data.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        out_size, out_size,
+        decode_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        output_scale, grid_size
     )
 
-def fast_decode_and_reconstruct(img_bgr:np.ndarray, grid_size=Config.QRSize):
-    """
-    利用向量化操作和K-Means，从存在微小形变的图像中提取完美的 0/255 标准网格。
-    """
-    h, w, _ = img_bgr.shape
-    cell_h, cell_w = h / grid_size, w / grid_size
-    # 搜索半径：在理论中心周围 35% 范围内寻找最纯净像素
-    search_r = max(1, int(min(cell_w, cell_h) * 0.35))
+    # 3. 释放拉图内存还给池子
+    warp_pool.put(img_data)
 
-    # 1. 极速计算全图局部方差矩阵
-    img_float = img_bgr.astype(np.float32)
-    img_sq = img_float ** 2
-    E_x = cv2.blur(img_float, (3, 3))
-    E_x2 = cv2.blur(img_sq, (3, 3))
-    var_img = np.sum(E_x2 - E_x**2, axis=2)
-
-    sampled_colors = np.zeros((grid_size * grid_size, 3), dtype=np.float32)
-
-    # 2. 网格游走采样
-    idx = 0
-    for row in range(grid_size):
-        for col in range(grid_size):
-            cx = int(col * cell_w + cell_w / 2)
-            cy = int(row * cell_h + cell_h / 2)
-            cx, cy = np.clip(cx, search_r, w - search_r - 1), np.clip(cy, search_r, h - search_r - 1)
-
-            # 寻找局部方差最小点
-            roi_var = var_img[cy-search_r : cy+search_r+1, cx-search_r : cx+search_r+1]
-            min_idx = np.argmin(roi_var)
-            dy, dx = np.unravel_index(min_idx, roi_var.shape)
-
-            # 采样平滑后的颜色
-            sampled_colors[idx] = E_x[cy - search_r + dy, cx - search_r + dx]
-            idx += 1
-
-    # 3. K-Means 聚类还原 8 种标准色
-    kmeans = KMeans(n_clusters=8, random_state=42, n_init=3).fit(sampled_colors)
-    standard_centers = np.where(kmeans.cluster_centers_ > 127, 255, 0).astype(np.uint8)
-
-    # 4. 极速重构图像 (Kronecker 积)
-    output_scale = 6
-    labels_2d = kmeans.labels_.reshape((grid_size, grid_size))
-    color_map = standard_centers[labels_2d]
-    reconstructed_img = np.kron(color_map, np.ones((output_scale, output_scale, 1), dtype=np.uint8))
-
-    return reconstructed_img
+    if success:
+        perfect_path = os.path.join(perfect_dir, f"perfect_{frame_idx:05d}.bmp")
+        # 异步落盘，不阻塞猜色算法
+        write_queue.put((perfect_path, decode_buffer))
+        return True, frame_idx
+    else:
+        decode_pool.put(decode_buffer)
+        return False, frame_idx
 
 # =============================================================================
-# [3. 主运行程序]
+# [3. 硬盘幽灵写入线程]
+# =============================================================================
+def async_disk_writer():
+    while True:
+        task = write_queue.get()
+        if task is None: break
+        filepath, data = task
+        imwrite_chinese(filepath, data)
+        # 写入完成后，释放解码内存
+        decode_pool.put(data)
+        write_queue.task_done()
+
+# =============================================================================
+# [4. 120 帧限速流水线控制逻辑]
 # =============================================================================
 if __name__ == "__main__":
-    video_path = 'test1.MOV'  
+    video_path = 'test1.MOV'
     OUT_SIZE = 1024
     GRID_SIZE = 133
+    OUTPUT_SCALE = 6
+    FRAME_LIMIT = 60  # 设定 120 帧上限
     
-    shared_out_buffer = np.zeros((OUT_SIZE, OUT_SIZE, 3), dtype=np.uint8)
+    perfect_dir = os.path.join(current_dir, "最终色彩重建_Perfect")
+    os.makedirs(perfect_dir, exist_ok=True)
     
-    print(f">>> 自动解码引擎启动 | 数据源: {video_path}")
-    print(f"[*] 当前配置: Grid={GRID_SIZE} | 解码状态: 始终开启")
+    print(f">>> [60fps 专项流水线] 预分配内存池中...")
+    
+    for _ in range(POOL_SIZE):
+        warp_pool.put(np.zeros((OUT_SIZE, OUT_SIZE, 3), dtype=np.uint8))
+        decode_pool.put(np.zeros((GRID_SIZE * OUTPUT_SCALE, GRID_SIZE * OUTPUT_SCALE, 3), dtype=np.uint8))
+    
+    writer_thread = threading.Thread(target=async_disk_writer, daemon=True)
+    writer_thread.start()
 
+    # 28 线程机器，分配 24 个消费者给猜色算法
+    max_workers = min(24, os.cpu_count() or 8)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    
+    print(f"[*] 猜色线程池已就绪: {max_workers} 线程")
+    print(f">>> 开始拉图（上限 {FRAME_LIMIT} 帧）...")
+
+    cap = cv2.VideoCapture(video_path)
+    frame_idx = 0
+    t_start = time.time()
+    
     try:
-        for loop_idx in range(1, 11):
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened(): break
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret or frame_idx >= FRAME_LIMIT: 
+                break
                 
-            while True:
-                ret, frame = cap.read()
-                if not ret: break
-                
-                # 1. 调用 DLL 进行全局拉平
-                success = process_frame(frame, shared_out_buffer, out_size=OUT_SIZE, grid_size=GRID_SIZE)
-                
-                if success:
-                    # 2. 自动进行局部纠偏与 K-Means 解码
-                    # 如果觉得卡顿，可以每隔 2 帧处理一次
-                    clean_grid = fast_decode_and_reconstruct(shared_out_buffer, grid_size=GRID_SIZE)
-                    
-                    # 显示结果
-                    cv2.imshow("Warped Output", cv2.resize(shared_out_buffer, (512, 512)))
-                    cv2.imshow("Perfect Decoded Grid", clean_grid)
-                
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    cap.release()
-                    cv2.destroyAllWindows()
-                    exit()
-                    
-            cap.release()
-            print(f"[*] 第 {loop_idx} 遍循环完成")
+            frame_idx += 1
             
+            # 无锁拿取内存块
+            warp_buf = warp_pool.get()
+            
+            success = warp_engine.ExtractQRCode(
+                frame.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)), 
+                frame.shape[1], frame.shape[0], 3,
+                warp_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                OUT_SIZE, OUT_SIZE, GRID_SIZE, 2, 10, None
+            )
+            
+            if success:
+                # 投递猜色任务，主线程不阻塞继续下一帧
+                executor.submit(
+                    decode_in_memory, 
+                    frame_idx, warp_buf, perfect_dir, OUT_SIZE, OUTPUT_SCALE, GRID_SIZE
+                )
+            else:
+                warp_pool.put(warp_buf)
+                
+            if frame_idx % 20 == 0:
+                print(f"  -> [Warp] 已提取并分发 {frame_idx}/{FRAME_LIMIT} 帧...")
+
     finally:
-        cv2.destroyAllWindows()
+        cap.release()
+        t_warp_end = time.time()
+        print(f"\n>>> [Warp 阶段结束] 耗时: {t_warp_end - t_start:.2f}s")
+        print(">>> 正在全力进行猜色算法解码，请稍候...")
+        
+        # 停止生产后，主线程在此阻塞直到所有猜色任务清空
+        executor.shutdown(wait=True)
+        
+        print(">>> 猜色解码完毕！等待最后磁盘写入...")
+        write_queue.put(None)
+        writer_thread.join()
+        
+        t_final = time.time()
+        print(f"\n>>> [全线完工] 总处理帧数: {frame_idx}")
+        print(f">>> 总耗时: {t_final - t_start:.2f} 秒")
+        print(f">>> 平均处理速度: {frame_idx / (t_final - t_start):.1f} fps")
