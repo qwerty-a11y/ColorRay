@@ -26,7 +26,6 @@ def bytes_to_colors(byte_data: bytes | bytearray) -> list[tuple[int, int, int]]:
         print(f"输入字节数{byte_len}，填充{pad_count}个0字节，新长度{len(byte_data_padded)}")
     else:
         byte_data_padded = byte_data
-        print(f"输入字节数{byte_len}已是3的整数倍，无需填充")
     
     # 2. 展开所有字节为连续的二进制位列表（低位在前）
     bits = []

@@ -65,3 +65,32 @@ def drawer(grid, need_border, filename, filepath=None):
     print(f"网格：{GRID_COUNT} x {GRID_COUNT} (每个单元{CELL_PIXELS}x{CELL_PIXELS}像素)")
 
     return full_path
+
+
+def mem_drawer(grid, need_border):
+
+    CELL_PIXELS = 12  # 每个网格单元的像素大小 (12x12 像素)
+    GRID_COUNT = Config.QRSize + 4  # 网格数量 = 1644/12 = 137
+    IMG_SIZE = GRID_COUNT*CELL_PIXELS   # 图像总尺寸 1644x1644
+    BG_GRAY = (128, 128, 128)
+
+    # ========== 创建图像并绘制 ==========
+    img = Image.new('RGB', (IMG_SIZE, IMG_SIZE), BG_GRAY)
+    draw = ImageDraw.Draw(img)
+
+    # 绘制所有单元格
+    for r in range(GRID_COUNT):
+        for c in range(GRID_COUNT):
+            x0 = c * CELL_PIXELS
+            y0 = r * CELL_PIXELS
+            x1 = x0 + CELL_PIXELS - 1
+            y1 = y0 + CELL_PIXELS - 1
+
+            # 绘制色块
+            draw.rectangle([x0, y0, x1, y1], fill=grid[r][c])
+
+            # 只有需要边框的才绘制灰色边框
+            if need_border[r][c]:
+                draw.rectangle([x0, y0, x1, y1], outline=BG_GRAY, width=1)
+
+    return img
