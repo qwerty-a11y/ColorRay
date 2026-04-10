@@ -38,27 +38,6 @@ def colors_to_matrix(
     total_pos = N * N  # 矩阵总位置数
 
     matrix = copy.deepcopy(matrix)  # 避免修改原矩阵
-
-    # ===================== 1. 输入合法性校验 =====================
-    # 校验矩阵尺寸
-    if len(matrix) != N or any(len(row) != N for row in matrix):
-        raise ValueError(f"矩阵必须是{N}×{N}的列表套列表，当前矩阵行数={len(matrix)}，列数={[len(row) for row in matrix][0] if matrix else 0}")
-    
-    # 校验颜色列表长度
-    if len(color_list) != patch_size:
-        raise ValueError(f"颜色列表长度必须为{patch_size}，当前长度={len(color_list)}")
-    
-    # 校验颜色列表元素（必须是RGB元组）
-    for idx, color in enumerate(color_list):
-        if not isinstance(color, tuple) or len(color) != 3 or any(not isinstance(c, int) or c < 0 or c > 255 for c in color):
-            raise TypeError(f"颜色列表第{idx}个元素必须是(0-255,0-255,0-255)的RGB元组，当前为{color}")
-    
-    # 校验矩阵元素（只能是None或RGB元组）
-    for i in range(N):
-        for j in range(N):
-            val = matrix[i][j]
-            if val is not None and (not isinstance(val, tuple) or len(val) != 3 or any(not isinstance(c, int) or c < 0 or c > 255 for c in val)):
-                raise TypeError(f"矩阵[{i}][{j}]位置元素非法，只能是None或RGB元组，当前为{val}")
     
     # 校验步长与N互质
     if math.gcd(step, N) != 1:

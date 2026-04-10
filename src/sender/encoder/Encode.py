@@ -12,6 +12,7 @@ from common.CRC16 import verify_crc16
 
 def Encode(path:str, raid:RaidLevel, rs:RSLevel):
     binary = FileToBinary(path)
+    print(f"原始文件大小: {len(binary)} 字节")
     
     # 【新增】构建固定长度的文件头信息 (文件名 + 文件大小)
     # 格式定义：
@@ -77,6 +78,7 @@ def Encode(path:str, raid:RaidLevel, rs:RSLevel):
     
     # 【修改】确保第二维（列）元素个数是 8 的倍数，不足则向上取整
     col_count = ((base_col_count + 7) // 8) * 8
+    print(f"打包数据大小：{col_count * row_count * FileGroupSize} 字节 (行数: {row_count}, 列数: {col_count}, 每块大小: {FileGroupSize} 字节)")
     
     # 初始化二维数组 [row_count][col_count]
     data_groups:List[List[bytes|None]] = [[None for _ in range(col_count)] for _ in range(row_count)]
@@ -189,8 +191,6 @@ def GroupToFrames(group: List[List[bytes]]) -> List[bytes]:
         for i in range(0, len(row_blocks), 8):
             frame = b''.join(row_blocks[i:i+8])
             frames.append(frame)
-    
-    print(f"[Debug] 已保存 {block_index_global} 个独立编码分片至目录：{debug_encode_dir}")
     return frames
 
 

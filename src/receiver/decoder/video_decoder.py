@@ -25,6 +25,7 @@ async def probe_video_dimensions(video_path: str) -> tuple[int, int]:
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
+        print(cmd)
         raise RuntimeError(f"ffprobe 失败: {stderr.decode().strip()}")
     try:
         # 去除首尾空白及可能的尾随逗号
@@ -82,7 +83,7 @@ async def stream_frames_rgb24(
     try:
         while True:
             # 精确读取一帧的原始字节
-            data = await process.stdout.readexactly(frame_size)
+            data = await process.stdout.readexactly(frame_size) # type: ignore
             # 将字节流转换为 PIL Image
             # 修复: Image.frombytes 的 size 参数应为 (width, height)
             img = Image.frombytes("RGB", (height, width), data)
@@ -106,7 +107,7 @@ async def stream_frames_rgb24(
         pass
     except Exception as e:
         # 其他异常，尝试读取 stderr 获取 FFmpeg 错误信息
-        stderr_data = await process.stderr.read()
+        stderr_data = await process.stderr.read() # type: ignore
         if stderr_data:
             print(f"FFmpeg 错误输出:\n{stderr_data.decode()}")
         raise e

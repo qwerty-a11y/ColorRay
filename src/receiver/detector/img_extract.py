@@ -54,7 +54,6 @@ def process_photo(img: np.ndarray, out_size=2048, grid_size=Config.QRSize, quiet
         return None
     img_bgr = np.ascontiguousarray(img)
     h, w, c = img_bgr.shape
-    print(f">>> 输入图像尺寸: {w}x{h}, 通道数: {c}")
     out_img = np.zeros((out_size, out_size, c), dtype=np.uint8)
     in_ptr = img_bgr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
     out_ptr = out_img.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
@@ -62,18 +61,6 @@ def process_photo(img: np.ndarray, out_size=2048, grid_size=Config.QRSize, quiet
         grid_size, 0, large_finder,
         None
     )
-    base_name = "debug"
-    save_dir = current_dir
-    save_path = os.path.join(save_dir, f"{base_name}.png")
-    cv2.imwrite(save_path, img)
-    print(f">>> 已保存原始图片至：{save_path}")
-    # [新增] 自动保存图片以便调试
-    if success:
-        # 保存校正后的图片
-        warped_save_path = os.path.join(save_dir, f"{base_name}_warped.png")
-        cv2.imwrite(warped_save_path, out_img)
-        print(f">>> 已保存校正图片至：{warped_save_path}")
-    
 
     return out_img if success else None
 

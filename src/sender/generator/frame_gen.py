@@ -203,7 +203,6 @@ def generate_frame(curpage: int, allpage: int, raid: RaidLevel, rs: RSLevel) -> 
         set_cell(r, 16, (255, 255, 255))  # 右方边框（与左上共享）
 
     header = page_to_color(curpage)+page_to_color(allpage)+raid_rs_to_color(raid, rs)
-    print(header)
 
     # ===================== 6. 绘制特定位置的黑/蓝色块 =====================
     # 左上定位块边框下方靠左：(17,2)开始

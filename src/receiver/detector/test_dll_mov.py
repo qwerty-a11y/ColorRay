@@ -96,10 +96,6 @@ def fast_decode_and_reconstruct(img_bgr:np.ndarray, grid_size=Config.QRSize):
     color_map = standard_centers[labels_2d]
     reconstructed_img = np.kron(color_map, np.ones((output_scale, output_scale, 1), dtype=np.uint8))
 
-    # 保存调试图片
-    debug_save_path = os.path.join(current_dir, "debug_reconstructed.png")
-    cv2.imwrite(debug_save_path, reconstructed_img)
-    print(f">>> 已保存重构图像至：{debug_save_path}")
     return reconstructed_img
 
 # =============================================================================

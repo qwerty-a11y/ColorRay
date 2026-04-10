@@ -58,8 +58,8 @@ def matrix_to_colors(
         new_filled_matrix = [[white_pixel for _ in range(expected_outer_size)] for _ in range(expected_outer_size)]
         for i in range(expected_inner_size):
             for j in range(expected_inner_size):
-                new_filled_matrix[border_width + i][border_width + j] = filled_matrix[i][j]
-        filled_matrix = new_filled_matrix
+                new_filled_matrix[border_width + i][border_width + j] = filled_matrix[i][j] # type: ignore
+        filled_matrix = new_filled_matrix # type: ignore
 
     # ===================== 1. 输入合法性校验 =====================
     # 校验两个矩阵的尺寸是否为137×137

@@ -93,7 +93,4 @@ def mem_drawer(grid, need_border):
             if need_border[r][c]:
                 draw.rectangle([x0, y0, x1, y1], outline=BG_GRAY, width=1)
 
-    print(f"图像尺寸：{IMG_SIZE} x {IMG_SIZE} 像素")
-    print(f"网格：{GRID_COUNT} x {GRID_COUNT} (每个单元{CELL_PIXELS}x{CELL_PIXELS}像素)")
-
     return img

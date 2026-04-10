@@ -63,7 +63,6 @@ def GetCorrectionPagesInfo(matrix: np.ndarray) -> tuple[int, RaidLevel, RSLevel]
         # 【修改】如果是右上角，需要反转颜色列表以匹配生成时的反向写入
         if reverse_colors:
             colors = colors[::-1]
-        print(colors)
         # 【修改】跳过前 4 位页码，直接从索引 4 开始解析总页数
         # 解析总页数 (原中 4 位，现索引 4-7)
         allpage_str = "".join(str(d) for d in colors[4:8])
@@ -165,10 +164,14 @@ def GetCurrentPage(matrix: np.ndarray) -> int:
     # 获取网格尺寸配置 (与 frame_gen 一致)
     GRID_COUNT = Config.QRSize
     # 读取三个角落的的前 4 个颜色块解析当前页码
-    def extract_page_at_location(start_r: int, start_c: int) -> int:
+    def extract_page_at_location(start_r: int, start_c: int, reverse_colors: bool = False) -> int:
         colors = []
         for k in range(4):
-            c = start_c + k
+            c = start_c
+            if reverse_colors:  # 【修改】反转颜色顺序
+                c = start_c - k
+            else:
+                c = start_c + k
             if 0 <= start_r < GRID_COUNT and 0 <= c < GRID_COUNT:
                 idx = numpy_to_int(matrix, start_r, c)
                 colors.append(idx)
@@ -182,15 +185,16 @@ def GetCurrentPage(matrix: np.ndarray) -> int:
     # 2. 左下：(GRID_COUNT - 16, 0)
     pos2 = (GRID_COUNT - 16, 0)
     # 3. 右上：(15, GRID_COUNT - 10)
-    pos3 = (15, GRID_COUNT - 10)
+    pos3 = (15, GRID_COUNT - 1)
     pages = []
     errors = []
-    for pos in [pos1, pos2, pos3]:
+    # 带索引循环读取
+    for index,pos in enumerate([pos1, pos2, pos3]):
         try:
-            page = extract_page_at_location(pos[0], pos[1])
+            page = extract_page_at_location(pos[0], pos[1], index == 2)  # 右上角启用 reverse_colors
             pages.append(page)
         except Exception as e:
-            errors.append(f"位置 {pos} 读取页码失败：{str(e)}")
+            errors.append(f"位置 {index + 1} ({pos}) 读取页码失败：{str(e)}")
     if not pages:
         raise ValueError(f"无法读取任何页码。错误详情：{'; '.join(errors)}")
     # 多数表决
@@ -263,20 +267,25 @@ async def DecodeFull(video: str):
 
     RSCorrectBytesPerGroup = 0
     FileGroupSize = 0
+    raid_text = None
+    rs_text = None
     match rs:
         case RSLevel.LEVEL1_5:
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL1_5.r
             FileGroupSize = Config.GroupDataSize - RSCorrectBytesPerGroup * Config.RSCorrectionBytes.LEVEL1_5.b
+            rs_text = "5%"
         case RSLevel.LEVEL2_10:
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL2_10.r
             FileGroupSize = Config.GroupDataSize - RSCorrectBytesPerGroup * Config.RSCorrectionBytes.LEVEL2_10.b
+            rs_text = "10%"
         case RSLevel.LEVEL3_15:
             RSCorrectBytesPerGroup = Config.RSCorrectionBytes.LEVEL3_15.r
             FileGroupSize = Config.GroupDataSize - RSCorrectBytesPerGroup * Config.RSCorrectionBytes.LEVEL3_15.b
+            rs_text = "15%"
         case RSLevel.NONE:
             FileGroupSize = Config.GroupDataSize
-    print(f"开始解码: pages={pages}, raid={raid}, rs={rs}")
-
+            rs_text = "0%"
+    
     # 初始化 full_data_groups（锯齿状，用于存储每页的8个数据块）
     full_data_groups: list[list[bytes]] = []
     rows = 0
@@ -284,13 +293,21 @@ async def DecodeFull(video: str):
         case RaidLevel.NONE:
             rows = pages * Config.FrameGroupCount
             full_data_groups = [[None for _ in range(rows)]]  # type: ignore
+            raid_text = "0%"
         case RaidLevel.LEVEL1_10:
             rows = pages * Config.FrameGroupCount // 10
             full_data_groups = [[None for _ in range(rows)] for i in range(10)]  # type: ignore
-        case RaidLevel.LEVEL2_20, RaidLevel.LEVEL3_40:
+            raid_text = "10%"
+        case RaidLevel.LEVEL2_20:
             rows = pages * Config.FrameGroupCount // 5
             full_data_groups = [[None for _ in range(rows)] for i in range(5)]  # type: ignore
+            raid_text = "20%"
+        case RaidLevel.LEVEL3_40:
+            rows = pages * Config.FrameGroupCount // 5
+            full_data_groups = [[None for _ in range(rows)] for i in range(5)]  # type: ignore
+            raid_text = "40%"
 
+    print(f"开始解码: 共{pages}页, raid纠错率{raid_text}, rs纠错率{rs_text}")
     img_index = -1
     debug_decode_dir = "debug_decoded_raw_chunks"
     os.makedirs(debug_decode_dir, exist_ok=True)
@@ -326,7 +343,6 @@ async def DecodeFull(video: str):
         frame, _ = generate_frame(curpage, pages if pages > 0 else 1, raid, rs)
 
         data_bytes = array_to_bytes(frame, matrix) # type: ignore
-        print(f"第 {img_index} 帧颜色数据转换为字节完成，页码 {curpage}，长度 {len(data_bytes)} 字节")
 
         group_size = len(data_bytes) // Config.FrameGroupCount
         for i in range(Config.FrameGroupCount):
@@ -334,12 +350,11 @@ async def DecodeFull(video: str):
             end = (i + 1) * group_size if i < Config.FrameGroupCount - 1 else len(data_bytes)
             chunk = data_bytes[start:end]
 
-            print(f"页码{curpage}保存在{raid_disk},{i+raid_page*Config.FrameGroupCount}位置")
-
             # RS 解码
             decoded_data = rs_decode_bytes(chunk, RSCorrectBytesPerGroup)
             if decoded_data == b'':
                 decoded_data = None
+                print(f"警告: RAID {raid_disk} 页 {raid_page} 块 {i} 解码失败。")
             # 只有当前位置为空时才填入（保留首次成功解码的数据）
             if full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] is None:
                 full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] = decoded_data # type: ignore
@@ -360,15 +375,19 @@ async def DecodeFull(video: str):
     # 首先确定最大列数
     max_cols = max(len(row) for row in full_data_groups) if full_data_groups else 0
     raw_data = b''
+    error_count = 0
     for col in range(max_cols):
         for row in range(len(full_data_groups)):
             if col < len(full_data_groups[row]):
                 chunk = full_data_groups[row][col]
                 if chunk is None:
                     chunk = b'\x00' * FileGroupSize
+                    error_count += 1
             else:
                 chunk = b'\x00' * FileGroupSize
+                error_count += 1
             raw_data += chunk
+    print(f"数据长度 {len(raw_data)} 字节，缺失块数 {error_count}，占比 {error_count/(pages*Config.FrameGroupCount):.2%}")
 
     # 解析文件头
     HEADER_LEN = 2 + 254 + 8
@@ -395,15 +414,18 @@ async def DecodeFull(video: str):
         print(f"警告：有效数据不足，实际 {len(file_content)} 字节，预期 {file_size}")
 
     print(f"文件名: {file_name}, 文件大小: {file_size} 字节, 实际数据长度: {len(file_content)} 字节")
-    print(f"文件头数据：{raw_data[:HEADER_LEN]}")
+
 
     # 写入文件
     final_name = file_name
+    final_path = os.path.join("decoded", final_name)
+    if not os.path.exists(final_path):
+        os.makedirs("decoded", exist_ok=True)
     counter = 1
     while os.path.exists(final_name):
         base, ext = os.path.splitext(file_name)
         final_name = f"{base}({counter}){ext}"
         counter += 1
-    with open(final_name, 'wb') as f:
+    with open(final_path, 'wb') as f:
         f.write(file_content)
     print(f"解码完成，输出文件：{final_name}")

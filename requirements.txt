@@ -3,6 +3,5 @@ numpy
 pillow
 reedsolo
 zfec
-os
 datetime
-ffmpeg-python
+scikit-learn

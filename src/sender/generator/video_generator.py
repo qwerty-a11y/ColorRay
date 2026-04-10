@@ -2,7 +2,6 @@ import asyncio
 from typing import AsyncIterator
 
 from PIL import Image
-import ffmpeg
 
 
 async def async_pil_images_to_lossless_video(
@@ -82,7 +81,9 @@ async def async_pil_images_to_lossless_video(
 
     try:
         # 逐帧写入管道
+        index = 0
         async for img in restored_generator():
+            print(f"正在处理帧: {index}")
             if pix_fmt_in == "rgb24" and img.mode != "RGB":
                 img = img.convert("RGB")
             elif pix_fmt_in == "gray" and img.mode != "L":
@@ -92,6 +93,8 @@ async def async_pil_images_to_lossless_video(
             process.stdin.write(img_bytes)
             # 关键：等待管道排空，避免数据堆积
             await process.stdin.drain()
+            index += 1
+
 
         # 所有帧写入完毕，关闭 stdin 发送 EOF
         process.stdin.close()
