@@ -11,7 +11,7 @@ def base_path():
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         base_path = sys._MEIPASS
     else:
-        base_path = os.path.abspath(".")
+        base_path = os.path.dirname(__file__)
     return base_path
 def add_dll_search_path(path):
     """将目录添加到当前进程的 PATH 环境变量中"""

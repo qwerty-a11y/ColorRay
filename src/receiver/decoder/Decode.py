@@ -1,6 +1,8 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import os
 import sys
+import threading
 
 import numpy as np
 
@@ -14,8 +16,9 @@ from receiver.decoder.matrix_to_colors import matrix_to_colors
 from common.RSmodule import rs_decode_bytes
 from receiver.decoder.video_decoder import stream_frames_rgb24
 from receiver.detector.img_extract import process_photo
-from receiver.detector.test_dll_mov import fast_decode_and_reconstruct
+from receiver.detector.test_dll_mov import process_video_pipeline
 from sender.generator.frame_gen import COLORS, generate_frame
+from threading import Lock
 
 def GetCorrectionPagesInfo(matrix: np.ndarray) -> tuple[int, RaidLevel, RSLevel]:
     """
@@ -59,7 +62,6 @@ def GetCorrectionPagesInfo(matrix: np.ndarray) -> tuple[int, RaidLevel, RSLevel]
                 colors.append(idx)
             else:
                 raise ValueError(f"坐标越界：({start_r}, {c})")
-        
         # 【修改】如果是右上角，需要反转颜色列表以匹配生成时的反向写入
         if reverse_colors:
             colors = colors[::-1]
@@ -239,31 +241,33 @@ def calculate_encoded_size(file_size: int, rs: RSLevel) -> int:
 
 async def DecodeFull(video: str):
 
-    generator = stream_frames_rgb24(video, 'numpy') # type: ignore
-    async def get_frame():
-        array = None
-        while array is None:
-            array = process_photo(await generator.__anext__()) # type: ignore
-        matrix = fast_decode_and_reconstruct(array)
-        return matrix
+    #generator = stream_frames_rgb24(video, 'numpy') # type: ignore
+    frame_generator = process_video_pipeline(video, 2000)
+    
     # 初始化异步视频抽帧
-    first_frame = await get_frame()
-    second_frame = await get_frame()
+    first_frame = (await frame_generator.__anext__())
+    second_frame = (await frame_generator.__anext__())
     #读取第一帧，获取总页数和raid、rs级别
     pages, raid, rs = None, None, None
     try:
         if first_frame is None:
             raise ValueError(f"无法处理第一帧图片")
-        pages, raid, rs = GetCorrectionPagesInfo(first_frame)
+        pages, raid, rs = GetCorrectionPagesInfo(first_frame[1])
     except Exception as e:
         print(e.args)
         try:
             if second_frame is None:
                 raise ValueError(f"无法处理第二帧图片")
-            pages, raid, rs = GetCorrectionPagesInfo(second_frame)
+            pages, raid, rs = GetCorrectionPagesInfo(second_frame[1])
         except Exception as e:
             print(f"Error: 无法从前两帧获取总页数和纠错级别。请检查帧文件是否正确。")
             sys.exit(1)
+
+    async def get_frame():
+        yield first_frame
+        yield second_frame
+        async for result in frame_generator:
+            yield result
 
     RSCorrectBytesPerGroup = 0
     FileGroupSize = 0
@@ -308,33 +312,14 @@ async def DecodeFull(video: str):
             raid_text = "40%"
 
     print(f"开始解码: 共{pages}页, raid纠错率{raid_text}, rs纠错率{rs_text}")
-    img_index = -1
 
-    while True:
-        matrix = None
-        try:
-            img_index += 1
-            if img_index <= 1:
-                match img_index:
-                    case 0:
-                        matrix = first_frame
-                    case 1:
-                        matrix = second_frame
-            else:
-                matrix = await get_frame()
-        except StopAsyncIteration:
-            print("已读取完所有帧，结束解码")
-            break
-        except Exception as e:
-            print(f"读取帧 {img_index+1} 失败: {str(e)}")
-            continue
-        
+    def decode_frame(img_index: int,matrix: np.ndarray):
         curpage = None
         try:
             curpage = GetCurrentPage(matrix) # type: ignore
         except Exception as e:
             print(f"页码读取失败: {str(e)}. 跳过此帧.")
-            continue
+            return []
         raid_disk = curpage // (rows // 8)
         raid_page = curpage % (rows // 8)
         print(f"读取到第 {img_index+1} 帧，当前页码 {curpage}，对应 RAID 盘 {raid_disk} 页 {raid_page}")
@@ -343,6 +328,7 @@ async def DecodeFull(video: str):
         data_bytes = array_to_bytes(frame, matrix) # type: ignore
 
         group_size = len(data_bytes) // Config.FrameGroupCount
+        info:list[tuple[int,int,bytes|None]] = []
         for i in range(Config.FrameGroupCount):
             start = i * group_size
             end = (i + 1) * group_size if i < Config.FrameGroupCount - 1 else len(data_bytes)
@@ -353,10 +339,61 @@ async def DecodeFull(video: str):
             if decoded_data == b'':
                 decoded_data = None
                 print(f"警告: RAID {raid_disk} 页 {raid_page} 块 {i} 解码失败。")
-            # 只有当前位置为空时才填入（保留首次成功解码的数据）
-            if full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] is None:
-                full_data_groups[raid_disk][i+raid_page*Config.FrameGroupCount] = decoded_data # type: ignore
+            info.append((raid_disk, i+raid_page*Config.FrameGroupCount, decoded_data))
+        
+        return info
 
+
+
+    max_workers = min(24, os.cpu_count() or 8)
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    lock = Lock()
+    loop = asyncio.get_running_loop()
+    result_queue = asyncio.Queue(maxsize=32)
+    async def producer():
+        try:
+            async for index,raw_frame in get_frame():
+                # 提交到线程池（非阻塞）
+                future = loop.run_in_executor(
+                    executor,
+                    decode_frame,
+                    index,
+                    raw_frame
+                )
+                # 将 future 放入队列，后续按顺序取结果
+                await result_queue.put(future)
+        finally:
+            for _ in range(max_workers):
+                await result_queue.put(None)
+
+    async def consumer(index:int):
+        while True:
+            future = await result_queue.get()
+            if future is None:
+                result_queue.task_done()
+                break
+            try:
+                chunks_info = await future
+                with lock:
+                    for disk, col, data in chunks_info:
+                        if data is not None and full_data_groups[disk][col] is None:
+                            full_data_groups[disk][col] = data
+            except Exception as e:
+                print(f"帧 {index} 写入数据时出错: {e}")
+            finally:
+                result_queue.task_done()
+
+    producer_task = asyncio.create_task(producer())
+    consumer_tasks = [asyncio.create_task(consumer(i)) for i in range(max_workers)]
+
+    await producer_task
+    await result_queue.join()
+    for c in consumer_tasks:
+        c.cancel()                     # 停止消费者
+    await asyncio.gather(*consumer_tasks, return_exceptions=True)
+
+    executor.shutdown(wait=False) 
+        
     # RAID 解码
     match raid:
         case RaidLevel.NONE:
