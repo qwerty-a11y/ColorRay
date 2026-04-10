@@ -1,21 +1,26 @@
+import sys
+
 import cv2
 import numpy as np
 import ctypes
 import os
 
 from common import Config
-
+def base_path():
+    """获取资源文件的绝对路径，兼容开发和 PyInstaller 打包"""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.abspath(".")
+    return base_path
 def add_dll_search_path(path):
     """将目录添加到当前进程的 PATH 环境变量中"""
     if path not in os.environ['PATH'].split(os.pathsep):
         os.environ['PATH'] = path + os.pathsep + os.environ['PATH']
 
 # 你的路径
-current_dir = os.path.abspath(os.path.dirname(__file__))
-opencv_bin_path = r"H:\OpenCV\opencv\build\x64\vc16\bin"
+current_dir = base_path()
 
-if os.path.exists(opencv_bin_path):
-    add_dll_search_path(opencv_bin_path)
 add_dll_search_path(current_dir)
 dll_candidates = ['warp_engine.dll', 'warp_engine_cpu.dll', 'warp_engine_cuda.dll']
 warp_engine = None

@@ -1,5 +1,7 @@
 import asyncio
+import os
 import subprocess
+import sys
 from PIL import Image
 from typing import AsyncIterator, Optional, Union
 
@@ -8,7 +10,22 @@ import numpy
 # 如需 numpy/OpenCV 支持，请取消注释：
 # import numpy as np
 # import cv2
+def base_path():
+    """获取资源文件的绝对路径，兼容开发和 PyInstaller 打包"""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.abspath(".")
+    return base_path
+def add_dll_search_path(path):
+    """将目录添加到当前进程的 PATH 环境变量中"""
+    if path not in os.environ['PATH'].split(os.pathsep):
+        os.environ['PATH'] = path + os.pathsep + os.environ['PATH']
 
+# 你的路径
+current_dir = base_path()
+
+add_dll_search_path(current_dir)
 
 async def probe_video_dimensions(video_path: str) -> tuple[int, int]:
     cmd = [

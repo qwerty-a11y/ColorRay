@@ -1,4 +1,6 @@
-﻿import cv2
+﻿import sys
+
+import cv2
 import numpy as np
 import ctypes
 import os
@@ -7,12 +9,22 @@ from sklearn.cluster import KMeans
 
 from common import Config
 
-# =============================================================================
-# [0. DLL 依赖路径配置]
-# =============================================================================
-current_dir = os.path.abspath(os.path.dirname(__file__))
-if hasattr(os, 'add_dll_directory'):
-    os.add_dll_directory(current_dir)
+def base_path():
+    """获取资源文件的绝对路径，兼容开发和 PyInstaller 打包"""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.abspath(".")
+    return base_path
+def add_dll_search_path(path):
+    """将目录添加到当前进程的 PATH 环境变量中"""
+    if path not in os.environ['PATH'].split(os.pathsep):
+        os.environ['PATH'] = path + os.pathsep + os.environ['PATH']
+
+# 你的路径
+current_dir = base_path()
+
+add_dll_search_path(current_dir)
 
 # =============================================================================
 # [1. 加载 CPU 版 DLL 并更新接口签名]

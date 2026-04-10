@@ -10,7 +10,7 @@ sys.path.insert(0, project_root)
 
 
 import numpy as np
-import src.common.Config as Config
+import common.Config as Config
 
 # 生成基础结构，后续建议根据基础结构做解码器
 # 修改自@kafuchino的代码，将其提取成函数

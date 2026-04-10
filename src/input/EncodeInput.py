@@ -42,9 +42,9 @@ def EncodeFull(path:str, raid:RaidLevel, rs:RSLevel):
         case RSLevel.NONE:
             rs_text = "0%"
     print(f"开始编码: 共{len(frames)}页, raid纠错率{raid_text}, rs纠错率{rs_text}")
-    output_video_path = os.path.join("video", "output_video.mp4")
-    if not os.path.exists("video"):
-        os.makedirs("video", exist_ok=True)
+    exe_path = os.path.dirname(sys.executable)
+    output_video_path = os.path.join(exe_path, "video", "output_video.mp4")
+    os.makedirs(os.path.join(exe_path,"video"), exist_ok=True)
     asyncio.run(async_pil_images_to_lossless_video(generator, output_video_path, fps=Config.VideoFrameRate, codec="libx264", pix_fmt_in="rgb24", preset="ultrafast"))
 
 

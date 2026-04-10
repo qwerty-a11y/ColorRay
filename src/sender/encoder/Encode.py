@@ -171,10 +171,6 @@ def GroupToFrames(group: List[List[bytes]]) -> List[bytes]:
     rows = len(group)
     cols = len(group[0])
     
-    # 调试输出目录
-    debug_encode_dir = "debug_encoded_raw_chunks"
-    os.makedirs(debug_encode_dir, exist_ok=True)
-    
     block_index_global = 0
     
     # 【修改】外层循环遍历行，确保先把一行分完再分下一行

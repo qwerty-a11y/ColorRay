@@ -309,8 +309,6 @@ async def DecodeFull(video: str):
 
     print(f"开始解码: 共{pages}页, raid纠错率{raid_text}, rs纠错率{rs_text}")
     img_index = -1
-    debug_decode_dir = "debug_decoded_raw_chunks"
-    os.makedirs(debug_decode_dir, exist_ok=True)
 
     while True:
         matrix = None
@@ -418,9 +416,9 @@ async def DecodeFull(video: str):
 
     # 写入文件
     final_name = file_name
-    final_path = os.path.join("decoded", final_name)
-    if not os.path.exists(final_path):
-        os.makedirs("decoded", exist_ok=True)
+    exe_path = os.path.dirname(sys.executable)
+    final_path = os.path.join(exe_path,"decoded", final_name)
+    os.makedirs(os.path.join(exe_path,"decoded"), exist_ok=True)
     counter = 1
     while os.path.exists(final_name):
         base, ext = os.path.splitext(file_name)
