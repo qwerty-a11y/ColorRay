@@ -140,10 +140,6 @@ async def process_video_pipeline(video_path: str, frame_limit: int = 60,
                 try:
                     f_idx, res_img = f.result()
                     if res_img is not None:
-                        # 调试：保存res_img(ndarray)
-                        save_path = os.path.join(".", f"frame_{f_idx}_res.png")
-                        from PIL import Image
-                        Image.fromarray(res_img).save(save_path)
                         yield f_idx, res_img
                 except Exception as e:
                     print(f"Error processing frame: {e}")
