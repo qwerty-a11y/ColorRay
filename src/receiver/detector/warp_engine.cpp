@@ -22,7 +22,7 @@ void FastIntegralThreshold(const Mat& src, Mat& dst, int blockSize, int C) {
     int rows = src.rows;
     int cols = src.cols;
 
-    #pragma omp parallel for
+#pragma omp parallel for
     for (int y = 0; y < rows; ++y) {
         const uchar* src_ptr = src.ptr<uchar>(y);
         uchar* dst_ptr = dst.ptr<uchar>(y);
@@ -96,7 +96,7 @@ vector<Point3f> FindMarkerCenters(const Mat& input, int ch) {
 }
 
 /*==============================================================================
-                                [局部追踪模块] 
+                                [局部追踪模块]
 ==============================================================================*/
 Point3f FindSingleMarkerInROI(const Mat& roi_img, int ch) {
     Mat gray;
@@ -127,7 +127,7 @@ Point3f FindSingleMarkerInROI(const Mat& roi_img, int ch) {
         if (cnt >= 2) {
             Moments mu = moments(contours[i], false);
             // 严格保持用户要求的 50 阈值
-            if (mu.m00 > 50 && mu.m00 > max_area) { 
+            if (mu.m00 > 50 && mu.m00 > max_area) {
                 max_area = (float)mu.m00;
                 best_center = Point3f((float)(mu.m10 / mu.m00), (float)(mu.m01 / mu.m00), (float)mu.m00);
             }
@@ -154,7 +154,7 @@ void DecodePayload(const Mat& warped_img, unsigned char* decoded_data, int grid_
     float gain_g = std::min(std::max(128.0f / (float)(current_means[1] + 1e-6), 0.1f), 5.0f);
     float gain_b = std::min(std::max(128.0f / (float)(current_means[2] + 1e-6), 0.1f), 5.0f);
 
-    #pragma omp parallel for
+#pragma omp parallel for
     for (int y = 0; y < img_resized.rows; ++y) {
         Vec3b* ptr = img_resized.ptr<Vec3b>(y);
         for (int x = 0; x < img_resized.cols; ++x) {
@@ -177,8 +177,8 @@ void DecodePayload(const Mat& warped_img, unsigned char* decoded_data, int grid_
     for (int i = 0; i < 11; ++i) for (int j = 0; j < 11; ++j) kernel[i][j] /= sum;
 
     Mat final_array(padded_size, padded_size, CV_8UC3, Scalar(255, 255, 255));
-    
-    #pragma omp parallel for
+
+#pragma omp parallel for
     for (int by = 0; by < padded_size; ++by) {
         for (int bx = 0; bx < padded_size; ++bx) {
             float r = 0, g = 0, b = 0;
@@ -204,138 +204,139 @@ void DecodePayload(const Mat& warped_img, unsigned char* decoded_data, int grid_
 ==============================================================================*/
 extern "C" {
 
-static vector<Point2f> prev_corners; 
-static bool use_tracking = false;
-static double total_time_ms = 0;
-static long long frame_counter = 0;
+    static vector<Point2f> prev_corners;
+    static bool use_tracking = false;
+    static double total_time_ms = 0;
+    static long long frame_counter = 0;
 
-// 【参数驱动版接口】：11 个参数，与 Python 脚本完美对齐
-__declspec(dllexport) bool ExtractQRCode(
-    unsigned char* in_data, int width, int height, int channels,
-    unsigned char* out_data, int out_width, int out_height,
-    int grid_size, int quiet_zone, int large_finder, 
-    unsigned char* decoded_data)
-{
-    auto start = std::chrono::high_resolution_clock::now();
+    // 【参数驱动版接口】：11 个参数，与 Python 脚本完美对齐
+    __declspec(dllexport) bool ExtractQRCode(
+        unsigned char* in_data, int width, int height, int channels,
+        unsigned char* out_data, int out_width, int out_height,
+        int grid_size, int quiet_zone, int large_finder,
+        unsigned char* decoded_data)
+    {
+        auto start = std::chrono::high_resolution_clock::now();
 
-    Mat img(height, width, (channels == 3) ? CV_8UC3 : CV_8UC1, in_data);
-    Mat out_img(out_height, out_width, CV_8UC3, out_data);
-    
-    vector<Point2f> current_corners;
-    bool tracking_success = false;
+        Mat img(height, width, (channels == 3) ? CV_8UC3 : CV_8UC1, in_data);
+        Mat out_img(out_height, out_width, CV_8UC3, out_data);
 
-    if (use_tracking && prev_corners.size() == 4) {
-        tracking_success = true;
-        int roi_size = 200; 
-        current_corners.resize(4); 
-        bool track_failed_flag = false;
+        vector<Point2f> current_corners;
+        bool tracking_success = false;
 
-        #pragma omp parallel for
-        for (int i = 0; i < 4; i++) {
-            if (track_failed_flag) continue; 
-            Point2f pt = prev_corners[i];
-            int rx = std::max(0, (int)pt.x - roi_size / 2);
-            int ry = std::max(0, (int)pt.y - roi_size / 2);
-            int rw = std::min(width - rx, roi_size);
-            int rh = std::min(height - ry, roi_size);
-            Rect roi_rect(rx, ry, rw, rh);
-            Mat roi_img = img(roi_rect);
-            Point3f local_center = FindSingleMarkerInROI(roi_img, channels);
-            
-            if (local_center.z > 0) current_corners[i] = Point2f(local_center.x + rx, local_center.y + ry);
-            else track_failed_flag = true;
-        }
-        if (track_failed_flag) { tracking_success = false; current_corners.clear(); }
-    }
+        if (use_tracking && prev_corners.size() == 4) {
+            tracking_success = true;
+            int roi_size = 200;
+            current_corners.resize(4);
+            bool track_failed_flag = false;
 
-    if (!tracking_success) {
-        float scale = 1100.0f / (float)max(width, height);
-        Mat small_img;
-        resize(img, small_img, Size(), scale, scale, INTER_AREA);
-        vector<Point3f> centers;
-        vector<Point3f> small_centers = FindMarkerCenters(small_img, channels);
-        for (auto pt : small_centers) centers.push_back(Point3f(pt.x / scale, pt.y / scale, pt.z));
-
-        if (centers.size() >= 4) {
-            Point2f approx_center(0, 0);
-            for (auto p : centers) approx_center += Point2f(p.x, p.y);
-            approx_center.x /= (float)centers.size(); approx_center.y /= (float)centers.size();
-            if (centers.size() > 4) {
-                sort(centers.begin(), centers.end(), [&approx_center](Point3f a, Point3f b) {
-                    return norm(Point2f(a.x, a.y) - approx_center) > norm(Point2f(b.x, b.y) - approx_center);
-                });
-                centers.resize(4);
-            }
-            Point2f exact_center(0, 0);
-            for (auto p : centers) exact_center += Point2f(p.x, p.y);
-            exact_center.x /= 4.0f; exact_center.y /= 4.0f;
-            int br_idx = -1; float min_ratio = 1e9;
+#pragma omp parallel for
             for (int i = 0; i < 4; i++) {
-                float dist = (float)norm(Point2f(centers[i].x, centers[i].y) - exact_center);
-                float ratio = centers[i].z / (dist * dist);
-                if (ratio < min_ratio) { min_ratio = ratio; br_idx = i; }
+                if (track_failed_flag) continue;
+                Point2f pt = prev_corners[i];
+                int rx = std::max(0, (int)pt.x - roi_size / 2);
+                int ry = std::max(0, (int)pt.y - roi_size / 2);
+                int rw = std::min(width - rx, roi_size);
+                int rh = std::min(height - ry, roi_size);
+                Rect roi_rect(rx, ry, rw, rh);
+                Mat roi_img = img(roi_rect);
+                Point3f local_center = FindSingleMarkerInROI(roi_img, channels);
+
+                if (local_center.z > 0) current_corners[i] = Point2f(local_center.x + rx, local_center.y + ry);
+                else track_failed_flag = true;
             }
-            Point2f br_point = Point2f(centers[br_idx].x, centers[br_idx].y);
-            vector<Point2f> sorted_pts;
-            for (auto p : centers) sorted_pts.push_back(Point2f(p.x, p.y));
-            sort(sorted_pts.begin(), sorted_pts.end(), [&exact_center](Point2f a, Point2f b) {
-                return atan2(a.y - exact_center.y, a.x - exact_center.x) < atan2(b.y - exact_center.y, b.x - exact_center.x);
-            });
-            int s_br_idx = 0;
-            for (int i = 0; i < 4; i++) if (norm(sorted_pts[i] - br_point) < 1.0f) { s_br_idx = i; break; }
-            current_corners.push_back(sorted_pts[(s_br_idx + 2) % 4]); 
-            current_corners.push_back(sorted_pts[(s_br_idx + 3) % 4]); 
-            current_corners.push_back(sorted_pts[s_br_idx]);           
-            current_corners.push_back(sorted_pts[(s_br_idx + 1) % 4]); 
+            if (track_failed_flag) { tracking_success = false; current_corners.clear(); }
         }
+
+        if (!tracking_success) {
+            float scale = 1100.0f / (float)max(width, height);
+            Mat small_img;
+            resize(img, small_img, Size(), scale, scale, INTER_AREA);
+            vector<Point3f> centers;
+            vector<Point3f> small_centers = FindMarkerCenters(small_img, channels);
+            for (auto pt : small_centers) centers.push_back(Point3f(pt.x / scale, pt.y / scale, pt.z));
+
+            if (centers.size() >= 4) {
+                Point2f approx_center(0, 0);
+                for (auto p : centers) approx_center += Point2f(p.x, p.y);
+                approx_center.x /= (float)centers.size(); approx_center.y /= (float)centers.size();
+                if (centers.size() > 4) {
+                    sort(centers.begin(), centers.end(), [&approx_center](Point3f a, Point3f b) {
+                        return norm(Point2f(a.x, a.y) - approx_center) > norm(Point2f(b.x, b.y) - approx_center);
+                        });
+                    centers.resize(4);
+                }
+                Point2f exact_center(0, 0);
+                for (auto p : centers) exact_center += Point2f(p.x, p.y);
+                exact_center.x /= 4.0f; exact_center.y /= 4.0f;
+                int br_idx = -1; float min_ratio = 1e9;
+                for (int i = 0; i < 4; i++) {
+                    float dist = (float)norm(Point2f(centers[i].x, centers[i].y) - exact_center);
+                    float ratio = centers[i].z / (dist * dist);
+                    if (ratio < min_ratio) { min_ratio = ratio; br_idx = i; }
+                }
+                Point2f br_point = Point2f(centers[br_idx].x, centers[br_idx].y);
+                vector<Point2f> sorted_pts;
+                for (auto p : centers) sorted_pts.push_back(Point2f(p.x, p.y));
+                sort(sorted_pts.begin(), sorted_pts.end(), [&exact_center](Point2f a, Point2f b) {
+                    return atan2(a.y - exact_center.y, a.x - exact_center.x) < atan2(b.y - exact_center.y, b.x - exact_center.x);
+                    });
+                int s_br_idx = 0;
+                for (int i = 0; i < 4; i++) if (norm(sorted_pts[i] - br_point) < 1.0f) { s_br_idx = i; break; }
+                current_corners.push_back(sorted_pts[(s_br_idx + 2) % 4]);
+                current_corners.push_back(sorted_pts[(s_br_idx + 3) % 4]);
+                current_corners.push_back(sorted_pts[s_br_idx]);
+                current_corners.push_back(sorted_pts[(s_br_idx + 1) % 4]);
+            }
+        }
+
+        if (current_corners.size() == 4) {
+            if (use_tracking) {
+                float alpha = 0.99f; float deadzone_radius = 0.5f;
+                for (int i = 0; i < 4; i++) {
+                    float dist = (float)norm(current_corners[i] - prev_corners[i]);
+                    if (dist < deadzone_radius) current_corners[i] = prev_corners[i];
+                    else current_corners[i] = current_corners[i] * alpha + prev_corners[i] * (1.0f - alpha);
+                }
+            }
+            prev_corners = current_corners;
+            use_tracking = true;
+            Point2f tl = current_corners[0], tr = current_corners[1], br = current_corners[2], bl = current_corners[3];
+
+            // --- 核心数学计算：自动推导物理比例 ---
+            float logic_total_width = (float)grid_size + 2.0f * (float)quiet_zone;
+            float center_offset = (float)quiet_zone + (float)large_finder / 2.0f;
+            float r_min = center_offset / logic_total_width;
+            float r_max = (logic_total_width - center_offset) / logic_total_width;
+
+            vector<Point2f> src = { tl, tr, br, bl };
+            vector<Point2f> dst = {
+                Point2f(r_min * out_width, r_min * out_height),
+                Point2f(r_max * out_width, r_min * out_height),
+                Point2f(r_max * out_width, r_max * out_height),
+                Point2f(r_min * out_width, r_max * out_height)
+            };
+            Mat M = getPerspectiveTransform(src, dst);
+            warpPerspective(img, out_img, M, Size(out_width, out_height), INTER_NEAREST);
+            if (decoded_data != nullptr) DecodePayload(out_img, decoded_data, grid_size, quiet_zone);
+        }
+        else { use_tracking = false; return false; }
+
+        // =========================================================================
+        // 【恢复】：性能计算与控制台监控模块
+        // =========================================================================
+        auto end = std::chrono::high_resolution_clock::now();
+        double current_duration = std::chrono::duration<double, std::milli>(end - start).count();
+
+        total_time_ms += current_duration;
+        frame_counter++;
+        double average_duration = total_time_ms / (double)frame_counter;
+
+        std::cout << ">>> [CPU Warp Engine] Mode: " << (tracking_success ? "Tracking" : "Global")
+            << " | Current: " << std::fixed << std::setprecision(1) << current_duration << " ms"
+            << " | Average: " << std::fixed << std::setprecision(2) << average_duration << " ms"
+            << " (" << frame_counter << " frames)\r";
+
+        return true;
     }
-
-    if (current_corners.size() == 4) {
-        if (use_tracking) {
-            float alpha = 0.99f; float deadzone_radius = 0.5f; 
-            for (int i = 0; i < 4; i++) {
-                float dist = (float)norm(current_corners[i] - prev_corners[i]);
-                if (dist < deadzone_radius) current_corners[i] = prev_corners[i];
-                else current_corners[i] = current_corners[i] * alpha + prev_corners[i] * (1.0f - alpha);
-            }
-        }
-        prev_corners = current_corners;
-        use_tracking = true;
-        Point2f tl = current_corners[0], tr = current_corners[1], br = current_corners[2], bl = current_corners[3];
-        
-        // --- 核心数学计算：自动推导物理比例 ---
-        float logic_total_width = (float)grid_size + 2.0f * (float)quiet_zone;
-        float center_offset = (float)quiet_zone + (float)large_finder / 2.0f ;
-        float r_min = center_offset / logic_total_width;
-        float r_max = (logic_total_width - center_offset) / logic_total_width;
-
-        vector<Point2f> src = { tl, tr, br, bl };
-        vector<Point2f> dst = { 
-            Point2f(r_min * out_width, r_min * out_height), 
-            Point2f(r_max * out_width, r_min * out_height), 
-            Point2f(r_max * out_width, r_max * out_height), 
-            Point2f(r_min * out_width, r_max * out_height) 
-        };
-        Mat M = getPerspectiveTransform(src, dst);
-        warpPerspective(img, out_img, M, Size(out_width, out_height), INTER_NEAREST);
-        if (decoded_data != nullptr) DecodePayload(out_img, decoded_data, grid_size, quiet_zone);
-    } else { use_tracking = false; return false; }
-
-    // =========================================================================
-    // 【恢复】：性能计算与控制台监控模块
-    // =========================================================================
-    auto end = std::chrono::high_resolution_clock::now();
-    double current_duration = std::chrono::duration<double, std::milli>(end - start).count();
-    
-    total_time_ms += current_duration;
-    frame_counter++;
-    double average_duration = total_time_ms / (double)frame_counter;
-
-    std::cout << ">>> [CPU Warp Engine] Mode: " << (tracking_success ? "Tracking" : "Global") 
-              << " | Current: " << std::fixed << std::setprecision(1) << current_duration << " ms"
-              << " | Average: " << std::fixed << std::setprecision(2) << average_duration << " ms" 
-              << " (" << frame_counter << " frames)\r";
-
-    return true;
-}
 }

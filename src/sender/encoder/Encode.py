@@ -1,14 +1,12 @@
 import math
 import os
-from typing import List, Tuple
+from typing import List
 
-from common import Config
 from common.CorrectionLevel import RaidLevel,RSLevel
 from common.File import FileToBinary
-from common.Config import FrameDataSize, GroupDataSize, RSCorrectionBytes
-from common.RSmodule import rs_encode_bytes, rs_decode_bytes
-from common.Raid import Raid5Encode, Raid6Encode, Raid5Decode, Raid6Decode
-from common.CRC16 import verify_crc16
+from common.Config import GroupDataSize, RSCorrectionBytes
+from common.RSmodule import rs_encode_bytes
+from common.Raid import Raid5Encode, Raid6Encode
 
 def Encode(path:str, raid:RaidLevel, rs:RSLevel):
     binary = FileToBinary(path)

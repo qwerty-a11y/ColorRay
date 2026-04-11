@@ -5,7 +5,7 @@ import os
 from common import Config
 from common.CorrectionLevel import RSLevel, RaidLevel
 from sender.encoder.Encode import Encode, GroupToFrames
-from sender.generator.drawer import drawer, mem_drawer
+from sender.generator.drawer import mem_drawer
 from sender.generator.frame_gen import generate_frame
 from sender.generator.bytes_to_colors import bytes_to_colors
 from sender.generator.colors_to_matrix import colors_to_matrix

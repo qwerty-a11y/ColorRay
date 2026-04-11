@@ -1,5 +1,4 @@
 from enum import Enum
-import math
 
 
 QRSize = 133

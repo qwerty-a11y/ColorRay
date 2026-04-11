@@ -2,7 +2,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import os
 import sys
-import threading
 
 import numpy as np
 
@@ -10,14 +9,9 @@ from common import Config
 from common.CorrectionLevel import RSLevel, RaidLevel
 from common.Raid import Raid5Decode, Raid6Decode
 from receiver.decoder.array_to_bytes import array_to_bytes, numpy_to_int
-from receiver.decoder.colors_to_bytes import colors_to_bytes
-from receiver.decoder.image_to_matrix import array_to_matrix
-from receiver.decoder.matrix_to_colors import matrix_to_colors
 from common.RSmodule import rs_decode_bytes
-from receiver.decoder.video_decoder import stream_frames_rgb24
-from receiver.detector.img_extract import process_photo
 from receiver.detector.test_dll_mov import process_video_pipeline
-from sender.generator.frame_gen import COLORS, generate_frame
+from sender.generator.frame_gen import generate_frame
 from threading import Lock
 
 def GetCorrectionPagesInfo(matrix: np.ndarray) -> tuple[int, RaidLevel, RSLevel]:
@@ -241,7 +235,6 @@ def calculate_encoded_size(file_size: int, rs: RSLevel) -> int:
 
 async def DecodeFull(video: str):
 
-    #generator = stream_frames_rgb24(video, 'numpy') # type: ignore
     frame_generator = process_video_pipeline(video, 2000)
     
     # 初始化异步视频抽帧

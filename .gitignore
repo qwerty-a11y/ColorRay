@@ -16,6 +16,11 @@ data/input/*
 data/output/*
 data/qr_code/*
 data/*
+src/dist/*
+*.xlsx
+build/
+1.py
+profile_output.txt
 
 !data/**/.gitkeep
 

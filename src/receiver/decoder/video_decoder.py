@@ -1,9 +1,8 @@
 import asyncio
 import os
-import subprocess
 import sys
 from PIL import Image
-from typing import AsyncIterator, Optional, Union
+from typing import AsyncIterator, Union
 
 import numpy
 

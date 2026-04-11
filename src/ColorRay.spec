@@ -8,6 +8,7 @@ a = Analysis(
         ('C:\\Users\\kafuchino\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-7.1.1-full_build\\bin\\ffmpeg.exe', '.'),
         ('C:\\Users\\kafuchino\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-7.1.1-full_build\\bin\\ffprobe.exe', '.'),
         ('H:\\ColorRay\\src\\receiver\\detector\\warp_engine.dll', '.'),
+        ('H:\\ColorRay\\src\\receiver\\detector\\kmeans_core.dll','.')
     ],
     datas=[],
     hiddenimports=['asyncio', 'importlib.resources'],
