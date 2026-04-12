@@ -386,17 +386,22 @@ async def DecodeFull(video: str):
     await asyncio.gather(*consumer_tasks, return_exceptions=True)
 
     executor.shutdown(wait=False) 
-        
+    
+    disk_count = len(full_data_groups)
+    decoded_disk_count = 1
     # RAID 解码
     match raid:
         case RaidLevel.NONE:
             pass
         case RaidLevel.LEVEL1_10:
             full_data_groups = Raid5Decode(full_data_groups) # type: ignore
+            decoded_disk_count = 9
         case RaidLevel.LEVEL2_20:
             full_data_groups = Raid5Decode(full_data_groups) # type: ignore
+            decoded_disk_count = 4
         case RaidLevel.LEVEL3_40:
             full_data_groups = Raid6Decode(full_data_groups) # type: ignore
+            decoded_disk_count = 3
 
     # 此时 full_data_groups 是原始数据矩阵（行数 = 数据盘数，列数可能不等，但编码时所有行等长）
     # 按列优先顺序提取所有数据块（与编码填充顺序一致）
@@ -415,7 +420,7 @@ async def DecodeFull(video: str):
                 chunk = b'\x00' * FileGroupSize
                 error_count += 1
             raw_data += chunk
-    print(f"数据长度 {len(raw_data)} 字节，缺失块数 {error_count}，占比 {error_count/(pages*Config.FrameGroupCount):.2%}")
+    print(f"数据长度 {len(raw_data)} 字节，缺失块数 {error_count}，占比 {error_count/(pages*Config.FrameGroupCount*decoded_disk_count//disk_count):.2%}")
 
     # 解析文件头
     HEADER_LEN = 2 + 254 + 8
